@@ -3998,32 +3998,66 @@ function stopSpeech() {
   }
 }
 
+let activeUtteranceRef = null;
+let speechResumeTimer = null;
+
 function speakWithBrowserTTS(fullSpeechText, onDoneCallback) {
   if (!("speechSynthesis" in window)) {
     if (onDoneCallback) onDoneCallback();
     return;
   }
-  try {
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.resume();
-    const utterance = new SpeechSynthesisUtterance(fullSpeechText);
-    utterance.lang = "en-US";
-    const bestVoice = pickBestNaturalBrowserVoice();
-    if (bestVoice) {
-      utterance.voice = bestVoice;
-      if (bestVoice.lang) utterance.lang = bestVoice.lang;
+
+  if (speechResumeTimer) {
+    clearTimeout(speechResumeTimer);
+    speechResumeTimer = null;
+  }
+
+  const launchUtterance = () => {
+    try {
+      const utterance = new SpeechSynthesisUtterance(fullSpeechText);
+      // Keep a global reference so iOS Safari's garbage collector never destroys the utterance mid-speech!
+      activeUtteranceRef = utterance;
+      utterance.lang = "en-US";
+      utterance.volume = 1.0;
+
+      // Only assign a specific voice if it is a guaranteed local (on-device) voice;
+      // on iOS Safari, assigning a non-downloaded voice silently produces zero audio!
+      const bestVoice = pickBestNaturalBrowserVoice();
+      if (bestVoice && bestVoice.localService !== false) {
+        utterance.voice = bestVoice;
+        if (bestVoice.lang) utterance.lang = bestVoice.lang;
+      }
+
+      utterance.rate = 0.98;
+      utterance.pitch = 1.0;
+      utterance.onend = () => {
+        activeUtteranceRef = null;
+        if (onDoneCallback) onDoneCallback();
+      };
+      utterance.onerror = () => {
+        activeUtteranceRef = null;
+        if (onDoneCallback) onDoneCallback();
+      };
+
+      window.speechSynthesis.speak(utterance);
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+    } catch {
+      if (onDoneCallback) onDoneCallback();
     }
-    utterance.rate = 0.98;
-    utterance.pitch = 1.0;
-    utterance.onend = () => {
-      if (onDoneCallback) onDoneCallback();
-    };
-    utterance.onerror = () => {
-      if (onDoneCallback) onDoneCallback();
-    };
-    window.speechSynthesis.speak(utterance);
+  };
+
+  try {
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      window.speechSynthesis.cancel();
+      // iOS Safari requires a 60ms tick after cancel() before queueing the next speak() call
+      speechResumeTimer = setTimeout(launchUtterance, 60);
+    } else {
+      launchUtterance();
+    }
   } catch {
-    if (onDoneCallback) onDoneCallback();
+    launchUtterance();
   }
 }
 
@@ -4031,7 +4065,14 @@ async function speakCurrentStep(force = false) {
   if (!state.speakerEnabled && !force) return;
   if (!state.recipe) return;
 
-  stopSpeech();
+  if (state.currentAudio) {
+    try {
+      state.currentAudio.pause();
+    } catch {
+      // Ignore
+    }
+    state.currentAudio = null;
+  }
   state.isCoachSpeaking = true;
 
   // Pause microphone recognition while coach is speaking so it never transcribes its own voice
@@ -4062,61 +4103,7 @@ async function speakCurrentStep(force = false) {
   const tipText = stepObj.tip ? ` Coach tip: ${stepObj.tip}` : "";
   const fullSpeechText = `Step ${stepNum}. ${plainInstruction}.${tipText}`;
 
-  const openaiKey = (localStorage.getItem("chefcoach_openai_key") || "").trim();
-  const openaiNoCredits = localStorage.getItem("chefcoach_openai_tts_disabled") === "true";
-
-  // If no OpenAI key or OpenAI key has no credits, speak IMMEDIATELY & SYNCHRONOUSLY within the user tap gesture
-  // so iOS Safari and Android Chrome never block audio playback!
-  if (!openaiKey || openaiNoCredits) {
-    speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
-    return;
-  }
-
-  // Unlock iOS WebSpeech synchronously during user tap in case OpenAI fetch falls back
-  if ("speechSynthesis" in window) {
-    try {
-      window.speechSynthesis.resume();
-    } catch {
-      // Ignore
-    }
-  }
-
-  // Try OpenAI Neural TTS ("tts-1", voice: nova/shimmer/onyx)
-  try {
-    const res = await fetch("https://api.openai.com/v1/audio/speech", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiKey}`,
-      },
-      body: JSON.stringify({
-        model: "tts-1",
-        voice: state.voiceStyle || "nova",
-        input: fullSpeechText,
-      }),
-    });
-    if (res.ok) {
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      state.currentAudio = audio;
-      audio.onended = resumeMicAfterSpeech;
-      audio.onerror = () => speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
-      const playPromise = audio.play();
-      if (playPromise !== undefined) {
-        playPromise.catch(() => {
-          speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
-        });
-      }
-      return;
-    } else if (res.status === 429 || res.status === 401 || res.status === 403) {
-      // Remember that OpenAI TTS has no quota/credits so future taps speak instantaneously on iOS Safari!
-      localStorage.setItem("chefcoach_openai_tts_disabled", "true");
-    }
-  } catch {
-    // Fallback to browser voice below
-  }
-
+  // Speak IMMEDIATELY & SYNCHRONOUSLY inside the user's tap event so iOS Safari and mobile browsers never block audio!
   speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
 }
 
