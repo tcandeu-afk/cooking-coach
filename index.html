@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#16a34a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="ChefCoach" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="icon.svg" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <title>ChefCoach — AI Cooking Coach</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Clean Top Header: Brand + Recipe Book Shortcut + Burger Menu -->
+    <header class="top-bar">
+      <div class="brand" id="homeBtn" role="button" tabindex="0" aria-label="Back to Home">
+        <span class="brand-icon">🍳</span>
+        <span class="brand-title">ChefCoach</span>
+      </div>
+
+      <div class="top-controls">
+        <button type="button" class="recipe-book-top-btn" id="openRecipeBookTopBtn" title="My Recipe Book">
+          📖 <span id="savedCountBadge">0</span>
+        </button>
+
+        <button type="button" class="burger-btn" id="burgerMenuBtn" aria-label="Open Menu & Settings" title="Menu & Settings">
+          ☰
+        </button>
+      </div>
+    </header>
+
+    <main class="screen-container">
+      
+      <!-- ================= SCREEN 1: REQUEST, CAMERA & DIETARY PRIORITIES ================= -->
+      <section id="screenSetup" class="screen active">
+        <div class="hero-card">
+          <h1>What are we cooking today?</h1>
+          <p class="subtitle">Type what you have, or snap a photo of your pantry or fridge.</p>
+          
+          <div class="prompt-box">
+            <div class="textarea-wrapper">
+              <textarea
+                id="cravingInput"
+                rows="3"
+                placeholder="e.g., Something with 4 bananas, or chicken and broccoli..."
+              ></textarea>
+              <div class="input-toolbar">
+                <label for="pantryPhotoInput" class="camera-btn" title="Take a photo or upload pantry image">
+                  📷 Snap Pantry / Fridge
+                </label>
+                <input type="file" id="pantryPhotoInput" accept="image/*" capture="environment" hidden />
+                <button type="button" class="clear-input-btn" id="clearInputBtn" title="Clear text">Clear</button>
+              </div>
+            </div>
+
+            <!-- Pantry Photo Preview & Vision AI Detection Banner -->
+            <div id="photoPreviewCard" class="photo-preview-card" hidden>
+              <img id="photoPreviewImg" src="" alt="Pantry preview" />
+              <div class="photo-meta">
+                <span class="photo-badge" id="photoStatusBadge">👁️ Vision AI Ready</span>
+                <p id="photoDetectedText">Analyzing ingredients from photo...</p>
+              </div>
+              <button type="button" class="remove-photo-btn" id="removePhotoBtn" aria-label="Remove photo">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dietary Priority Toggles (Now 4 Priorities including No Added Sugar) -->
+        <div class="section-block">
+          <h2 class="section-label">Dietary Priorities (Tap to toggle)</h2>
+          <p class="helper-hint">We calculate real nutrition from USDA/CoFID ingredient weights & warn you if an ingredient conflicts (if none are selected, we prioritize <strong>🍽️ Maximum Taste</strong>):</p>
+          <div class="dietary-grid">
+            <button type="button" class="diet-card active" data-diet="cholesterol-safe" aria-pressed="true">
+              <span class="diet-icon">❤️</span>
+              <div>
+                <span class="diet-name">Cholesterol Safe</span>
+                <span class="diet-desc">Low saturated fat (&lt;3g/serving), heart-safe olive oil & soluble fiber</span>
+              </div>
+              <span class="diet-check">✓</span>
+            </button>
+
+            <button type="button" class="diet-card active" data-diet="protein-rich" aria-pressed="true">
+              <span class="diet-icon">💪</span>
+              <div>
+                <span class="diet-name">Protein Rich</span>
+                <span class="diet-desc">Prioritizes 30g+ high-quality lean protein per portion</span>
+              </div>
+              <span class="diet-check">✓</span>
+            </button>
+
+            <button type="button" class="diet-card" data-diet="fiber-rich" aria-pressed="false">
+              <span class="diet-icon">🌾</span>
+              <div>
+                <span class="diet-name">Fiber Rich</span>
+                <span class="diet-desc">Prioritizes 10g+ dietary fiber from whole grains, legumes & greens</span>
+              </div>
+              <span class="diet-check">+</span>
+            </button>
+
+            <button type="button" class="diet-card" data-diet="no-added-sugar" aria-pressed="false">
+              <span class="diet-icon">🚫</span>
+              <div>
+                <span class="diet-name">No Added Sugar</span>
+                <span class="diet-desc">Zero refined sugar, honey, or syrups—sweetened only with whole foods</span>
+              </div>
+              <span class="diet-check">+</span>
+            </button>
+          </div>
+
+          <!-- Open Field for "Other" Custom Dietary Priority -->
+          <div class="other-dietary-box">
+            <label for="otherDietaryInput" class="other-dietary-label">✨ Other Dietary Priority / Restriction (Optional)</label>
+            <div class="other-dietary-row">
+              <input
+                type="text"
+                id="otherDietaryInput"
+                placeholder='e.g., "Dairy-free", "Gluten-free", "Low sodium", "Keto", "Nut allergy"...'
+              />
+              <button type="button" class="clear-other-diet-btn" id="clearOtherDietBtn" hidden title="Clear custom priority">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Servings selector -->
+        <div class="section-block servings-row">
+          <span class="section-label">Servings</span>
+          <div class="stepper">
+            <button type="button" class="stepper-btn" id="servingsMinus" aria-label="Decrease servings">−</button>
+            <span class="stepper-val" id="servingsValue">2</span>
+            <button type="button" class="stepper-btn" id="servingsPlus" aria-label="Increase servings">+</button>
+          </div>
+        </div>
+
+        <div class="sticky-bottom">
+          <button type="button" class="big-green-btn" id="findDishesBtn">
+            <span class="btn-main-text">Suggest Dish Options →</span>
+            <span class="btn-sub-text" id="generateSubText">Calculated per portion & per 100g</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- ================= SCREEN 2: PICK FROM A HANDFUL OF DISH OPTIONS + TWEAK BAR ================= -->
+      <section id="screenOptions" class="screen">
+        <div class="hero-card">
+          <div class="options-header-row">
+            <div>
+              <h1>Pick Your Dish</h1>
+              <p class="subtitle" id="optionsSubtitle">Tailored to your request & dietary goals.</p>
+            </div>
+            <div class="regen-controls">
+              <button type="button" class="prev-options-btn" id="prevOptionsBtn" hidden title="Back to previous dish suggestions">
+                ← Previous
+              </button>
+              <button type="button" class="regen-btn" id="regenerateOptionsBtn">
+                🔄 Regenerate
+              </button>
+            </div>
+          </div>
+
+          <!-- Active Dietary Badges (No AI Model Badge clutter) -->
+          <div class="badge-row" id="optionsDietaryBadges"></div>
+
+          <!-- Dietary Conflict Warning Banner (e.g., if user requested Bacon with Cholesterol Safe ON) -->
+          <div id="dietaryConflictBanner" class="conflict-warning-banner" hidden>
+            <div class="conflict-text" id="dietaryConflictText"></div>
+            <button type="button" class="conflict-fix-btn" id="conflictSwapBtn" hidden>
+              ✨ Swap to Heart-Safe Alternative
+            </button>
+          </div>
+
+          <!-- Interactive Amend / Tweak Bar on Pick Your Dish -->
+          <div class="tweak-options-box">
+            <label for="tweakOptionsInput" class="tweak-label">✨ Want to tweak or add to these suggestions?</label>
+            <div class="tweak-input-row">
+              <input
+                type="text"
+                id="tweakOptionsInput"
+                placeholder='e.g., "add eggs", "add more fiber", "make it spicy"...'
+              />
+              <button type="button" class="tweak-apply-btn" id="applyTweakOptionsBtn">Update</button>
+            </div>
+            <div class="quick-tweak-chips">
+              <button type="button" class="quick-tweak-pill" data-tweak="add eggs">+ Add Eggs</button>
+              <button type="button" class="quick-tweak-pill" data-tweak="add extra fiber">+ Boost Fiber</button>
+              <button type="button" class="quick-tweak-pill" data-tweak="add extra protein">+ Boost Protein</button>
+              <button type="button" class="quick-tweak-pill" data-tweak="swap to heart-safe lean ingredients">❤️ Make Heart-Safe</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Nutrition Basis Toggle (Per Portion vs Per 100g) -->
+        <div class="nutrition-basis-bar">
+          <span class="basis-label">📊 Nutrition Facts Basis:</span>
+          <div class="basis-toggle" role="radiogroup" aria-label="Nutrition Basis">
+            <button type="button" class="basis-pill active" data-basis="portion" id="basisPortionBtn">Per Portion (1 Serving)</button>
+            <button type="button" class="basis-pill" data-basis="100g" id="basis100gBtn">Per 100 g</button>
+          </div>
+        </div>
+
+        <div class="dish-options-list" id="dishOptionsContainer">
+          <!-- Populated with 3 distinct dish cards -->
+        </div>
+
+        <div class="sticky-bottom">
+          <button type="button" class="secondary-big-btn full-width-btn" id="backToSetupFromOptionsBtn">
+            ← Edit Request or Dietary Priorities
+          </button>
+        </div>
+      </section>
+
+      <!-- ================= SCREEN 3: INGREDIENTS, SMART SWAPS & GOOGLE KEEP ================= -->
+      <section id="screenIngredients" class="screen">
+        <div class="recipe-banner">
+          <div class="recipe-title-row">
+            <div class="badge-row" id="recipeBadges"></div>
+            <button type="button" class="save-recipe-pill" id="saveRecipeFromIngBtn">
+              🤍 Save to Recipe Book
+            </button>
+          </div>
+          <h1 id="recipeTitle">Recipe Title</h1>
+          <p id="recipeSummary" class="subtitle"></p>
+
+          <!-- Nutrition Basis Toggle on Ingredients Screen too -->
+          <div class="nutrition-header-strip">
+            <span class="nutri-source-note" id="nutriBasisTitle">Estimated from USDA/CoFID ingredient weights • Per Portion</span>
+            <button type="button" class="mini-basis-switch" id="toggleBasisIngBtn">Switch to Per 100g ⇄</button>
+          </div>
+          <div class="nutrition-strip four-cols" id="nutritionStrip"></div>
+        </div>
+
+        <!-- AI Re-Engineering Alert Banner when user swaps or adds ingredients -->
+        <div id="aiAdaptationBanner" class="ai-adaptation-banner" hidden>
+          <div class="ai-banner-text" id="aiAdaptationText"></div>
+          <button type="button" class="pivot-recipe-btn" id="pivotRecipeBtn" hidden>
+            ✨ Switch to Better-Fitting Dish
+          </button>
+        </div>
+
+        <div class="section-block">
+          <div class="ingredients-header">
+            <h2 class="section-label">Check Your Ingredients</h2>
+            <button type="button" class="text-action-btn" id="checkAllBtn">Check All</button>
+          </div>
+          <p class="helper-hint">
+            Tick what you have on hand. Untick anything you're missing to huddle with your Kitchen Partner!
+          </p>
+
+          <div class="ingredient-list" id="ingredientList">
+            <!-- Dynamically populated ingredients -->
+          </div>
+
+          <!-- Add extra ingredient you want to use up -->
+          <div class="add-extra-box">
+            <label for="addExtraInput" class="add-extra-label">➕ Have another ingredient to include?</label>
+            <div class="add-extra-row">
+              <input type="text" id="addExtraInput" placeholder="e.g., 150 g mushrooms or 2 eggs" />
+              <button type="button" class="add-extra-btn" id="addExtraBtn">Add</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sticky Bottom with "Shopping List (Google Keep)" and "Make It Now" -->
+        <div class="sticky-bottom">
+          <div class="dual-actions-equal">
+            <button type="button" class="keep-shopping-btn" id="shoppingListKeepBtn">
+              <span class="keep-icon">📝</span>
+              <span class="btn-main-text-sm">Shopping List</span>
+              <span class="btn-sub-text-xs" id="shoppingCountSubtext">Send missing to Google Keep</span>
+            </button>
+
+            <button type="button" class="big-green-btn" id="makeItNowBtn">
+              <span class="btn-main-text" id="makeItNowMainText">Make It Now →</span>
+              <span class="btn-sub-text" id="checkedCounterText">Adapt & build steps</span>
+            </button>
+          </div>
+          <button type="button" class="back-link-btn" id="backToOptionsBtn">
+            ← Back to Dish Options
+          </button>
+        </div>
+      </section>
+
+      <!-- ================= SCREEN 3.5: KITCHEN PARTNER CHAT (MISSING INGREDIENT HUDDLE) ================= -->
+      <section id="screenPartnerChat" class="screen">
+        <div class="partner-chat-header">
+          <div class="partner-avatar">👩‍🍳</div>
+          <div>
+            <h1>Kitchen Partner Huddle</h1>
+            <p class="subtitle" id="partnerChatSubtitle">Let's adapt the recipe around what you actually have.</p>
+          </div>
+        </div>
+
+        <div class="partner-chat-stream" id="partnerChatStream"></div>
+
+        <div class="partner-chat-composer">
+          <div class="composer-row">
+            <input
+              type="text"
+              id="partnerChatInput"
+              placeholder="Tell your coach what you have instead (e.g. 'I have canned tuna and courgette')..."
+            />
+            <button type="button" class="send-chat-btn" id="sendPartnerChatBtn">Send</button>
+          </div>
+        </div>
+
+        <div class="sticky-bottom dual-actions">
+          <button type="button" class="secondary-big-btn" id="backToIngredientsFromChatBtn">
+            ← Ingredients
+          </button>
+          <button type="button" class="big-green-btn" id="proceedFromChatToCookBtn">
+            <span class="btn-main-text">Cook Adapted Recipe →</span>
+            <span class="btn-sub-text" id="chatAdaptedSubText">Steps re-engineered & ready</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- ================= SCREEN 4: STEP-BY-STEP COOKING COACH ================= -->
+      <section id="screenCooking" class="screen">
+        <!-- Top Cooking Toolbar: Ingredients + Voice Read Toggle + Repeat + Sound-Wave Hands-Free Mic + All Steps -->
+        <div class="cooking-toolbar-five">
+          <button type="button" class="toolbar-pill" id="backToIngredientsBtn" title="Back to Ingredients">
+            🥕 Ingredients
+          </button>
+
+          <button type="button" class="toolbar-pill speaker-pill" id="speakerToggleBtn" aria-pressed="false" title="Toggle Auto Voice Read-Aloud">
+            <span id="speakerIcon">🔇</span>
+            <span id="speakerLabel">Voice Off</span>
+          </button>
+
+          <button type="button" class="toolbar-pill repeat-pill" id="repeatVoiceBtn" title="Repeat current step aloud">
+            🔁 Repeat
+          </button>
+
+          <!-- Compact Sound-Wave Graph Only Button for Hands-Free Mic -->
+          <button
+            type="button"
+            class="toolbar-pill wave-mic-btn"
+            id="voiceCommandToggleBtn"
+            aria-pressed="false"
+            title='Hands-Free Voice Control (Say "Next", "Repeat", "Timer")'
+            aria-label="Hands-Free Voice Control"
+          >
+            <svg class="sound-wave-svg" viewBox="0 0 28 24" width="24" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">
+              <line class="wave-bar b1" x1="3" y1="9" x2="3" y2="15" />
+              <line class="wave-bar b2" x1="8.5" y1="5" x2="8.5" y2="19" />
+              <line class="wave-bar b3" x1="14" y1="2" x2="14" y2="22" />
+              <line class="wave-bar b4" x1="19.5" y1="6" x2="19.5" y2="18" />
+              <line class="wave-bar b5" x1="25" y1="9" x2="25" y2="15" />
+            </svg>
+          </button>
+
+          <button type="button" class="toolbar-pill overview-pill" id="openAllStepsBtn" title="All Preparation Steps">
+            📋 Steps
+          </button>
+        </div>
+
+        <!-- Floating Multi-Timer Tray (Persists across steps!) -->
+        <div class="active-timers-tray" id="activeTimersTray" hidden></div>
+
+        <!-- Step Progress Bar -->
+        <div class="progress-wrapper">
+          <div class="progress-meta">
+            <span class="step-badge" id="stepCounterBadge">STEP 1 OF 5</span>
+            <span class="step-phase" id="stepPhaseText">Preparation</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="stepProgressFill" style="width: 20%"></div>
+          </div>
+        </div>
+
+        <!-- Giant Sticky-Finger Friendly Step Card -->
+        <div class="step-stage" id="stepStageCard">
+          <div class="step-instruction" id="stepInstructionText">
+            Instruction goes here...
+          </div>
+
+          <div class="step-tip-box" id="stepTipBox">
+            <span class="tip-icon">💡 Coach Tip:</span>
+            <span id="stepTipText">Tip goes here</span>
+          </div>
+
+          <!-- Smart Timer Area: ONLY shown when step has an explicit time duration! -->
+          <!-- Supports Mode Picker (e.g. Oven 16m vs Air Fryer 12m) AND +/- 1m custom adjustment -->
+          <div class="step-timer-area" id="stepTimerArea" hidden>
+            <div class="timer-modes-row" id="timerModesRow" hidden>
+              <!-- Populated when step has multiple time options (e.g. Oven 16 min vs Air Fryer 12 min) -->
+            </div>
+            <div class="timer-controls-bar">
+              <button type="button" class="timer-adjust-btn" id="timerMinusMinBtn" title="Subtract 1 minute">−1m</button>
+              <button type="button" class="timer-pill-btn" id="toggleTimerBtn">
+                ⏱️ Start 5:00 Timer
+              </button>
+              <button type="button" class="timer-adjust-btn" id="timerPlusMinBtn" title="Add 1 minute">+1m</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Giant Bottom Navigation -->
+        <div class="sticky-bottom cooking-nav">
+          <button type="button" class="prev-step-btn" id="prevStepBtn" aria-label="Previous Step">
+            ← Prev
+          </button>
+          <button type="button" class="big-green-btn next-step-btn" id="nextStepBtn">
+            <span class="btn-main-text" id="nextStepMainText">NEXT STEP →</span>
+            <span class="btn-sub-text" id="nextStepSubText">Tap anywhere here with sticky fingers</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- ================= SCREEN 5: COMPLETION, SAVE & RATE (1-5 STARS) ================= -->
+      <section id="screenDone" class="screen">
+        <div class="done-card">
+          <div class="done-emoji">🎉🍽️</div>
+          <h1>Bon Appétit!</h1>
+          <p class="subtitle" id="doneSummaryText">You crushed it! Your meal is ready to serve.</p>
+
+          <!-- Rate & Save to My Recipe Book Card -->
+          <div class="rate-save-card">
+            <span class="rate-label">⭐ Rate & Save to My Recipe Book</span>
+            <div class="star-rating-row" id="doneStarRatingRow" role="radiogroup" aria-label="Rate this recipe from 1 to 5 stars">
+              <button type="button" class="star-btn" data-rating="1">★</button>
+              <button type="button" class="star-btn" data-rating="2">★</button>
+              <button type="button" class="star-btn" data-rating="3">★</button>
+              <button type="button" class="star-btn" data-rating="4">★</button>
+              <button type="button" class="star-btn" data-rating="5">★</button>
+            </div>
+            <button type="button" class="save-book-cta-btn" id="saveToBookDoneBtn">
+              📖 Save to My Recipe Book
+            </button>
+          </div>
+
+          <div class="done-nutrition-card" id="doneNutritionSummary"></div>
+
+          <div class="done-actions">
+            <button type="button" class="secondary-big-btn" id="openBookFromDoneBtn">
+              📖 Open My Recipe Book
+            </button>
+            <button type="button" class="big-green-btn" id="cookAnotherBtn">
+              <span class="btn-main-text">Cook Another Meal</span>
+              <span class="btn-sub-text">Back to Coach Home</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= SCREEN 6: MY RECIPE BOOK (SAVED RECIPES & 1-5 STAR RATINGS) ================= -->
+      <section id="screenRecipeBook" class="screen">
+        <div class="hero-card">
+          <div class="options-header-row">
+            <div>
+              <h1>📖 My Recipe Book</h1>
+              <p class="subtitle">Your saved dishes, custom adaptations & 1–5 star ratings.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="recipe-book-list" id="recipeBookListContainer">
+          <!-- Populated dynamically from localStorage -->
+        </div>
+
+        <div class="sticky-bottom">
+          <button type="button" class="big-green-btn" id="backHomeFromBookBtn">
+            <span class="btn-main-text">← Back to Cooking Coach</span>
+          </button>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- ================= MODAL 1: ALL STEPS POPUP ================= -->
+    <div class="modal-backdrop" id="allStepsModal" hidden>
+      <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="allStepsModalTitle">
+        <div class="modal-header">
+          <h2 id="allStepsModalTitle">📋 All Preparation Steps</h2>
+          <button type="button" class="close-modal-btn" id="closeAllStepsBtn">✕ Close</button>
+        </div>
+        <p class="modal-subtitle">Tap any step to jump straight to it:</p>
+        <div class="all-steps-list" id="allStepsListContainer"></div>
+      </div>
+    </div>
+
+    <!-- ================= MODAL 2: SMART INGREDIENT SWAP POPUP ================= -->
+    <div class="modal-backdrop" id="replaceModal" hidden>
+      <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="replaceModalTitle">
+        <div class="modal-header">
+          <h2 id="replaceModalTitle">🔄 Smart Ingredient Swap</h2>
+          <button type="button" class="close-modal-btn" id="closeReplaceBtn">✕ Close</button>
+        </div>
+        <p class="modal-subtitle" id="replaceTargetLabel">Pick a substitute or type what you have—steps & nutrition will automatically re-calculate:</p>
+        <div class="replace-options-list" id="replaceOptionsList"></div>
+        <div class="custom-replace-box">
+          <label for="customReplaceInput">Or type whatever ingredient you have instead:</label>
+          <div class="custom-replace-row">
+            <input type="text" id="customReplaceInput" placeholder="e.g., 250 g halloumi, or canned tuna..." />
+            <button type="button" class="apply-custom-btn" id="applyCustomReplaceBtn">Swap & Adapt</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= MODAL 3: GOOGLE KEEP SHOPPING LIST EXPORT ================= -->
+    <div class="modal-backdrop" id="keepModal" hidden>
+      <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="keepModalTitle">
+        <div class="modal-header">
+          <h2 id="keepModalTitle">📝 Google Keep Shopping List</h2>
+          <button type="button" class="close-modal-btn" id="closeKeepModalBtn">✕ Close</button>
+        </div>
+        <p class="modal-subtitle" id="keepModalStatus">
+          ✅ Copied to your clipboard! Paste directly into a new Google Keep note.
+        </p>
+        <pre class="keep-preview-box" id="keepPreviewText"></pre>
+        <div class="keep-actions-col">
+          <a href="https://keep.google.com/" target="_blank" rel="noopener noreferrer" class="big-green-btn keep-link-btn" id="openGoogleKeepLink">
+            <span class="btn-main-text">Open Google Keep ↗</span>
+            <span class="btn-sub-text">Checklist is copied & ready to paste</span>
+          </a>
+          <button type="button" class="secondary-big-btn" id="nativeShareKeepBtn">
+            📲 Share Directly to Keep App (Mobile)
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= MODAL 4: UNIFIED BURGER MENU DRAWER ================= -->
+    <div class="modal-backdrop" id="burgerModal" hidden>
+      <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="burgerModalTitle">
+        <div class="modal-header">
+          <h2 id="burgerModalTitle">☰ Menu & Settings</h2>
+          <button type="button" class="close-modal-btn" id="closeBurgerModalBtn">✕ Close</button>
+        </div>
+
+        <!-- Quick Navigation -->
+        <div class="burger-section">
+          <button type="button" class="burger-nav-btn" id="openRecipeBookMenuBtn">
+            <span>📖 My Recipe Book (Saved & Rated)</span>
+            <span id="burgerBookCount">0 saved →</span>
+          </button>
+        </div>
+
+        <!-- AI Model Toggle -->
+        <div class="burger-section">
+          <span class="burger-label">🤖 Active AI Cooking Coach Model</span>
+          <div class="model-toggle full-width-toggle" role="radiogroup" aria-label="AI Model Selection">
+            <button type="button" class="model-pill active" id="modelGeminiBtn" data-model="gemini-argon">
+              ✨ Gemini Argon
+            </button>
+            <button type="button" class="model-pill" id="modelChatgptBtn" data-model="chatgpt">
+              🤖 ChatGPT
+            </button>
+          </div>
+        </div>
+
+        <!-- Interactive Keep Screen Awake Toggle -->
+        <div class="burger-section">
+          <div class="burger-toggle-row">
+            <div>
+              <span class="burger-label">☀️ Keep Screen Awake While Cooking</span>
+              <span class="burger-sub">Prevents your phone from locking during steps</span>
+            </div>
+            <button type="button" class="switch-pill active" id="wakeLockToggleBtn" aria-pressed="true">ON</button>
+          </div>
+        </div>
+
+        <!-- Natural Voice & Optional Live API Keys -->
+        <div class="burger-section api-form">
+          <label class="api-label">
+            <span>🎙️ Natural Voice Style</span>
+            <select id="voiceStyleSelect" class="voice-select">
+              <option value="nova">Warm & Energetic Coach (OpenAI Nova / Natural)</option>
+              <option value="shimmer">Calm & Clear Chef (OpenAI Shimmer / Natural)</option>
+              <option value="onyx">Deep & Steady Studio Voice (OpenAI Onyx)</option>
+            </select>
+          </label>
+          <label class="api-label">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span>✨ Gemini Argon API Key</span>
+              <span id="geminiKeyStatusBadge" class="api-status-pill">Not tested</span>
+            </div>
+            <input type="password" id="geminiKeyInput" placeholder="AIzaSy..." autocomplete="off" />
+          </label>
+          <label class="api-label">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span>🤖 OpenAI ChatGPT & Neural Voice Key</span>
+              <span id="openaiKeyStatusBadge" class="api-status-pill">Not tested</span>
+            </div>
+            <input type="password" id="openaiKeyInput" placeholder="sk-..." autocomplete="off" />
+          </label>
+          <div style="display:flex; gap:10px; margin-top:4px;">
+            <button type="button" class="secondary-outline-btn" id="testApiKeysBtn" style="flex:1; min-height:52px; font-weight:800;">
+              🔌 Test Both Keys
+            </button>
+            <button type="button" class="big-green-btn" id="saveApiKeysBtn" style="flex:1; min-height:52px;">
+              <span class="btn-main-text" style="font-size:1rem;">Save & Verify</span>
+            </button>
+          </div>
+          <div id="apiTestSummaryBox" class="api-test-summary" hidden></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
