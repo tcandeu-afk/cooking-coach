@@ -566,7 +566,16 @@ function init() {
 
   // Modals
   dom.closeReplaceBtn.addEventListener("click", () => (dom.replaceModal.hidden = true));
+  dom.applyCustomReplaceBtn.addEventListener("pointerdown", (e) => e.preventDefault());
   dom.applyCustomReplaceBtn.addEventListener("click", applyCustomReplacement);
+  if (dom.customReplaceInput) {
+    dom.customReplaceInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyCustomReplacement();
+      }
+    });
+  }
 
   dom.closeKeepModalBtn.addEventListener("click", () => (dom.keepModal.hidden = true));
   dom.nativeShareKeepBtn.addEventListener("click", handleNativeShareKeep);
@@ -3470,76 +3479,274 @@ function applyCustomReplacement() {
   const val = dom.customReplaceInput.value.trim();
   if (!val || state.activeReplaceIndex === null) return;
   const currentQty = state.recipe.ingredients[state.activeReplaceIndex].qtyMetric;
-  executeSmartSwap(state.activeReplaceIndex, val, currentQty, "Custom pantry ingredient");
+  const qtyMatch = val.match(/^(\d+\s*(?:g|ml|kg|l|oz|tbsp|tsp)\b)\s*(.*)$/i);
+  const newQty = qtyMatch && qtyMatch[2] ? qtyMatch[1].trim() : currentQty;
+  const newName = qtyMatch && qtyMatch[2] ? qtyMatch[2].trim() : val;
+  executeSmartSwap(state.activeReplaceIndex, newName, newQty, "Custom pantry swap");
 }
 
-function executeSmartSwap(index, newName, newQty, reason) {
+function escapeRegExp(str) {
+  return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function replaceOldIngredientMentionInText(text, oldName, newName, ingId) {
+  if (!text) return text;
+  let updated = text;
+
+  const shortOld = oldName.replace(/\s*\([^)]*\)/g, "").trim();
+  const shortNew = newName.replace(/\s*\([^)]*\)/g, "").trim();
+
+  // Build candidate terms from the old ingredient name so even if Gemini wrote plain text instead of [ing-X],
+  // every step, phase, and summary updates to the new ingredient!
+  const candidates = [shortOld];
+  shortOld
+    .split(/\s+(?:and|or|&|,)\s+|\s+/i)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 4 && !/^(fresh|sliced|diced|chopped|cooked|raw|whole|large|small|medium|organic|extra|virgin|boneless|skinless|fillet|fillets|pieces|strips|leaves|cloves|rinsed|drained)$/i.test(w))
+    .forEach((w) => candidates.push(w));
+
+  const replacementToken = ingId ? `[${ingId}]` : shortNew;
+
+  for (const term of candidates) {
+    if (!term) continue;
+    const regex = new RegExp(`\\b${escapeRegExp(term)}s?\\b`, "gi");
+    if (regex.test(updated)) {
+      updated = updated.replace(regex, replacementToken);
+      break;
+    }
+  }
+  return updated;
+}
+
+async function tryLiveReengineerSwapWithAI(recipe, index, oldName, newName, newQty) {
+  const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
+  const openaiKey = (localStorage.getItem("chefcoach_openai_key") || "").trim();
+  if (!geminiKey && !openaiKey) return null;
+
+  const ing = recipe.ingredients[index];
+  const prompt = `You are ChefCoach AI. The user is cooking "${recipe.title}" (${state.servings} servings).
+They just swapped ingredient #${index + 1} (${ing.id}):
+- OLD ingredient: "${oldName}"
+- NEW ingredient: "${newQty} ${newName}"
+
+Current ingredients:
+${JSON.stringify(recipe.ingredients.map((i) => ({ id: i.id, name: i.name, qtyMetric: i.qtyMetric })))}
+
+Current steps:
+${JSON.stringify(recipe.steps)}
+
+TASK:
+1. Re-engineer the recipe title, summary, and EVERY step so the dish genuinely incorporates "${newQty} ${newName}" instead of "${oldName}".
+2. In step instructions, ALWAYS reference ingredient IDs in brackets like [${ing.id}] so quantities stay linked, and remove any mention of "${oldName}".
+3. Adjust cooking times (timerMinutes), temperatures, and culinary tips to fit the cooking physics of "${newName}".
+4. Provide 2–3 smart culinary solutions in "discussionNote" explaining how the recipe was adapted for "${newName}" OR whether a pivot dish ("pivotDishTitle" and "pivotDishPrompt") is recommended if "${newName}" clashes with the dish style.
+5. Also provide accurate USDA per-100g nutrition for "${newName}" in "newIngredientNutritionPer100g".
+
+Return ONLY valid JSON:
+{
+  "title": "Updated recipe title featuring ${newName}",
+  "summary": "Updated 1-sentence description",
+  "discussionNote": "2-sentence explanation of how we adapted the cooking technique/timing for ${newName}, plus an optional alternative idea",
+  "suggestPivot": false,
+  "pivotDishTitle": "Optional new dish title if incompatible",
+  "pivotDishPrompt": "Optional prompt to generate new dish",
+  "newIngredientNutritionPer100g": { "kcal": 150, "proteinG": 20, "fiberG": 2, "cholMg": 40, "satFatG": 1.5, "addedSugarG": 0 },
+  "steps": [
+    {
+      "phase": "Step 1 • ...",
+      "instruction": "Short sentence referencing [${ing.id}]. Second short sentence.",
+      "tip": "Updated tip for ${newName}",
+      "timerMinutes": 5
+    }
+  ]
+}`;
+
+  if (geminiKey) {
+    try {
+      const gRes = await callGeminiGenerateContent(geminiKey, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json" },
+      });
+      if (gRes.ok) {
+        const raw = gRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (parsed && Array.isArray(parsed.steps) && parsed.steps.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {
+      // Fallback below
+    }
+  }
+
+  if (openaiKey) {
+    try {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          response_format: { type: "json_object" },
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const raw = data?.choices?.[0]?.message?.content;
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (parsed && Array.isArray(parsed.steps) && parsed.steps.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {
+      // Fallback below
+    }
+  }
+
+  return null;
+}
+
+async function executeSmartSwap(index, newName, newQty, reason) {
   const r = state.recipe;
   const ing = r.ingredients[index];
-  const oldName = ing.replacedFrom || ing.name;
-  ing.replacedFrom = oldName;
+  const oldName = ing.name;
+  const originalBaseName = ing.replacedFrom || oldName;
+  ing.replacedFrom = originalBaseName;
   ing.name = newName;
   if (newQty) ing.qtyMetric = newQty;
   ing.checked = true;
+  // Clear hardcoded per-100g nutrition from the old ingredient so USDA/CoFID re-calculates for the new ingredient!
+  delete ing.nutritionPer100g;
+
   dom.replaceModal.hidden = true;
 
-  // Re-engineer recipe title if primary ingredient was swapped
-  if (index === 0) {
-    const shortOld = oldName.split("(")[0].trim();
-    const shortNew = newName.split("(")[0].trim();
-    if (r.title.toLowerCase().includes(shortOld.toLowerCase())) {
-      r.title = r.title.replace(new RegExp(shortOld, "i"), shortNew);
-    } else {
-      r.title = `${shortNew} & ${r.title}`;
-    }
+  const shortOld = oldName.replace(/\s*\([^)]*\)/g, "").trim();
+  const shortNew = newName.replace(/\s*\([^)]*\)/g, "").trim();
+
+  // 1. Immediate synchronous local re-engineering of Title, Summary & Every Step
+  if (r.title.toLowerCase().includes(shortOld.toLowerCase())) {
+    r.title = r.title.replace(new RegExp(escapeRegExp(shortOld), "gi"), shortNew);
+  } else if (index === 0) {
+    r.title = `${shortNew} — ${r.title}`;
+  } else if (!r.title.toLowerCase().includes(shortNew.toLowerCase())) {
+    r.title = `${r.title} (with ${shortNew})`;
   }
 
-  // Re-engineer cooking timings and tips based on the culinary physics of the new ingredient!
+  if (r.summary) {
+    r.summary = replaceOldIngredientMentionInText(r.summary, oldName, newName, null);
+  }
+
   const lowerNew = newName.toLowerCase();
-  let stepEngineeringSummary = `Updated all steps to use ${newQty} ${newName}.`;
+  let stepEngineeringSummary = `Replaced ${shortOld} with ${ing.qtyMetric} ${shortNew} across your preparation steps & recalculated nutrition.`;
+  let anyStepReferencedIng = false;
 
   r.steps.forEach((step) => {
-    if (!step.instruction.includes(`[${ing.id}]`)) return;
-
-    if (/chickpea|bean|lentil|canned|cooked/i.test(lowerNew)) {
-      if (step.timerMinutes && step.timerMinutes > 4) {
-        step.timerMinutes = 3;
+    const beforeInst = step.instruction;
+    if (step.instruction.includes(`[${ing.id}]`)) {
+      anyStepReferencedIng = true;
+    } else {
+      const replacedInst = replaceOldIngredientMentionInText(step.instruction, oldName, newName, ing.id);
+      if (replacedInst !== beforeInst) {
+        step.instruction = replacedInst;
+        anyStepReferencedIng = true;
       }
-      step.tip = `Since ${newName} is already tender, we shortened the cooking time to 3 minutes so it warms through without turning mushy.`;
-      stepEngineeringSummary = `Re-engineered cooking time down to 3 mins & adjusted technique for ${newName}.`;
-    } else if (/tofu|halloumi|tempeh/i.test(lowerNew)) {
-      step.timerMinutes = 5;
-      step.tip = `Press ${newName} dry and let it sear undisturbed for 2–3 minutes per side to build a golden crust.`;
-      stepEngineeringSummary = `Adjusted searing technique & 5-min crisp timer for ${newName}.`;
-    } else if (/chicken|turkey|pork/i.test(lowerNew)) {
-      step.timerMinutes = 6;
-      step.tip = `Ensure ${newName} cooks through completely until juices run clear (approx. 6 minutes).`;
-      stepEngineeringSummary = `Extended searing timer to 6 mins for safe poultry preparation.`;
-    } else if (/cauliflower/i.test(lowerNew)) {
-      step.timerMinutes = 4;
-      step.tip = `Cauliflower rice cooks in just 4 minutes—avoid over-steaming so it stays fluffy!`;
-      stepEngineeringSummary = `Reduced grain simmering time from 12 mins to 4 mins for cauliflower rice.`;
+    }
+
+    if (step.phase) {
+      step.phase = replaceOldIngredientMentionInText(step.phase, oldName, newName, null);
+    }
+    if (step.tip) {
+      step.tip = replaceOldIngredientMentionInText(step.tip, oldName, newName, null);
+    }
+
+    if (step.instruction.includes(`[${ing.id}]`)) {
+      if (/chickpea|bean|lentil|canned|cooked|tuna/i.test(lowerNew)) {
+        if (step.timerMinutes && step.timerMinutes > 4) {
+          step.timerMinutes = 3;
+        }
+        step.tip = `Since ${shortNew} is already cooked/tender, warm it gently for 3 minutes so it absorbs the aromatics without drying out.`;
+        stepEngineeringSummary = `Shortened cooking time to 3 mins & adapted technique for ${shortNew}.`;
+      } else if (/tofu|halloumi|tempeh|paneer/i.test(lowerNew)) {
+        step.timerMinutes = 5;
+        step.tip = `Pat ${shortNew} dry and sear undisturbed for 2–3 minutes per side to build a golden crisp crust.`;
+        stepEngineeringSummary = `Adjusted searing technique & 5-min crisp timer for ${shortNew}.`;
+      } else if (/chicken|turkey|pork|beef|steak|lamb/i.test(lowerNew)) {
+        step.timerMinutes = 6;
+        step.tip = `Sear ${shortNew} over medium-high heat for ~6 minutes until golden brown and cooked through.`;
+        stepEngineeringSummary = `Adjusted searing timer to 6 mins and pan temperature for ${shortNew}.`;
+      } else if (/salmon|cod|fish|prawn|shrimp|seafood/i.test(lowerNew)) {
+        step.timerMinutes = 4;
+        step.tip = `Cook ${shortNew} gently for 3–4 minutes until just opaque and flaky—avoid overcooking.`;
+        stepEngineeringSummary = `Adapted pan timing to a gentle 4-min sear for ${shortNew}.`;
+      } else if (/cauliflower|courgette|zucchini|spinach|broccoli|mushroom/i.test(lowerNew)) {
+        step.timerMinutes = 4;
+        step.tip = `Sauté ${shortNew} over high heat for 4 minutes so it stays vibrant and tender-crisp.`;
+        stepEngineeringSummary = `Adjusted sauté timing to 4 mins so ${shortNew} stays tender-crisp.`;
+      } else {
+        step.tip = `Incorporate ${ing.qtyMetric} ${shortNew} here and toss well so it infuses with the pan aromatics.`;
+      }
     }
   });
 
-  // Check if the user swapped a sweet ingredient into a savory dish or vice-versa (Incompatible Swap Detection!)
-  const sweetSwapIntoSavory = !r.isSweet && /banana|chocolate|berry|mango|sweet|jam/i.test(lowerNew);
-  const savorySwapIntoSweet = r.isSweet && /chicken|salmon|fish|tuna|beef|garlic|onion|broccoli/i.test(lowerNew);
-
-  if (sweetSwapIntoSavory || savorySwapIntoSweet) {
-    // Generate a smart Pivot Recipe that actually fits the swapped ingredient!
-    const pivotOptions = buildMultiOptionsWithCulinaryAI(newName, 0);
-    state.pivotSuggestion = pivotOptions[0];
-    showAdaptationNotification(
-      `🤔 Heads up: "${newName}" changes the flavor profile of "${r.title}" dramatically. I adapted the current steps, OR you can switch to "${state.pivotSuggestion.title}" built specifically around ${newName}!`,
-      true
-    );
-  } else {
-    state.pivotSuggestion = null;
-    showAdaptationNotification(`🧠 AI Re-Engineered: ${stepEngineeringSummary} (${reason})`);
+  // If no step explicitly mentioned the old ingredient token or name, weave the swapped ingredient into the main cooking step!
+  if (!anyStepReferencedIng && r.steps.length > 0) {
+    const targetIdx = Math.min(1, r.steps.length - 1);
+    r.steps[targetIdx].instruction += ` Fold in [${ing.id}] and cook for 2–3 minutes so its flavor melds into the dish.`;
   }
 
+  // Always generate a fresh Pivot Recipe option built around the new ingredient + remaining checked ingredients
+  // so the user can choose between the Adapted Recipe OR switching to a brand-new dish!
+  const otherChecked = r.ingredients
+    .filter((item, i) => i !== index && item.checked)
+    .slice(0, 2)
+    .map((item) => item.name.replace(/\s*\([^)]*\)/g, "").trim());
+  const pivotPrompt = [shortNew, ...otherChecked].join(", ");
+  const pivotOptions = buildMultiOptionsWithCulinaryAI(pivotPrompt, 0);
+  state.pivotSuggestion = pivotOptions[0];
+
+  showAdaptationNotification(
+    `🔄 Swapped "${shortOld}" → "${ing.qtyMetric} ${shortNew}": ${stepEngineeringSummary} (Want a completely different dish built around ${shortNew}? Tap below!)`,
+    true
+  );
+
   renderIngredientsScreen();
+
+  // 2. If a live Gemini or OpenAI API key is configured, run deep AI culinary re-engineering in the background
+  // to tailor every step, timer, and discussion note specifically to the new ingredient!
+  const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
+  const openaiKey = (localStorage.getItem("chefcoach_openai_key") || "").trim();
+  if (geminiKey || openaiKey) {
+    showAdaptationNotification(
+      `⏳ AI Coach is re-engineering steps, timings & culinary solutions for "${ing.qtyMetric} ${shortNew}"...`,
+      true
+    );
+    const liveAdapted = await tryLiveReengineerSwapWithAI(r, index, oldName, newName, ing.qtyMetric);
+    if (liveAdapted) {
+      if (liveAdapted.title) r.title = liveAdapted.title;
+      if (liveAdapted.summary) r.summary = liveAdapted.summary;
+      if (Array.isArray(liveAdapted.steps) && liveAdapted.steps.length > 0) {
+        r.steps = liveAdapted.steps;
+      }
+      if (liveAdapted.newIngredientNutritionPer100g) {
+        ing.nutritionPer100g = liveAdapted.newIngredientNutritionPer100g;
+      }
+      if (liveAdapted.pivotDishPrompt) {
+        const customPivot = buildMultiOptionsWithCulinaryAI(liveAdapted.pivotDishPrompt, 0);
+        if (customPivot[0]) {
+          if (liveAdapted.pivotDishTitle) customPivot[0].title = liveAdapted.pivotDishTitle;
+          state.pivotSuggestion = customPivot[0];
+        }
+      }
+      showAdaptationNotification(
+        `✨ AI Re-Engineered for ${shortNew}: ${liveAdapted.discussionNote || stepEngineeringSummary}`,
+        true
+      );
+      renderIngredientsScreen();
+    }
+  }
 }
 
 function showAdaptationNotification(message, showPivotBtn = false) {
@@ -3970,8 +4177,127 @@ function renderCurrentStep(shouldAutoSpeak = false) {
 }
 
 // ---------------- HIGH-QUALITY NATURAL VOICE ENGINE ----------------
-// Priority 1: OpenAI Neural TTS ("nova" / "shimmer" / "onyx") if OpenAI API key is set and has quota
-// Priority 2: Best Natural/Neural/Premium OS voice (iOS Safari SpeechSynthesis unlocked synchronously on user gesture)
+// Priority 1: Gemini 2.5 Flash Native Audio TTS (works on iPhone even when Mute/Silent switch is ON!)
+// Priority 2: OpenAI Neural TTS ("nova" / "shimmer" / "onyx")
+// Priority 3: Default iOS/Browser SpeechSynthesis (without overriding utterance.voice so iOS never picks an un-downloaded voice)
+let sharedAudioEl = null;
+let sharedAudioCtx = null;
+
+function unlockMobileAudioMediaChannel() {
+  try {
+    if (!sharedAudioEl) {
+      sharedAudioEl = new Audio();
+      sharedAudioEl.playsInline = true;
+    }
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx && !sharedAudioCtx) {
+      sharedAudioCtx = new AudioCtx();
+    }
+    if (sharedAudioCtx && sharedAudioCtx.state === "suspended") {
+      sharedAudioCtx.resume();
+    }
+  } catch {
+    // Ignore audio context init errors
+  }
+}
+
+function createWavBlobFromBase64Pcm(base64Pcm, sampleRate = 24000) {
+  const binaryStr = atob(base64Pcm);
+  const pcmLen = binaryStr.length;
+  const wavBuffer = new ArrayBuffer(44 + pcmLen);
+  const view = new DataView(wavBuffer);
+
+  const writeString = (offset, str) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + pcmLen, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true); // PCM chunk size
+  view.setUint16(20, 1, true); // PCM format = 1
+  view.setUint16(22, 1, true); // Mono = 1 channel
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // Byte rate (16-bit mono)
+  view.setUint16(32, 2, true); // Block align
+  view.setUint16(34, 16, true); // 16 bits per sample
+  writeString(36, "data");
+  view.setUint32(40, pcmLen, true);
+
+  const bytes = new Uint8Array(wavBuffer, 44);
+  for (let i = 0; i < pcmLen; i++) {
+    bytes[i] = binaryStr.charCodeAt(i);
+  }
+
+  return new Blob([wavBuffer], { type: "audio/wav" });
+}
+
+async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback) {
+  const ttsModels = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
+  for (const modelId of ttsModels) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: `Read this cooking step clearly and warmly: ${fullSpeechText}` }] }],
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: "Kore",
+                  },
+                },
+              },
+            },
+          }),
+        }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+      if (!inlineData?.data) continue;
+
+      const mime = inlineData.mimeType || "";
+      let audioBlob = null;
+      if (mime.includes("pcm") || mime.includes("L16")) {
+        const rateMatch = mime.match(/rate=(\d+)/i);
+        const rate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
+        audioBlob = createWavBlobFromBase64Pcm(inlineData.data, rate);
+      } else {
+        const bin = atob(inlineData.data);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        audioBlob = new Blob([arr], { type: mime || "audio/wav" });
+      }
+
+      const url = URL.createObjectURL(audioBlob);
+      if (!sharedAudioEl) sharedAudioEl = new Audio();
+      sharedAudioEl.src = url;
+      state.currentAudio = sharedAudioEl;
+      sharedAudioEl.onended = () => {
+        URL.revokeObjectURL(url);
+        if (onDoneCallback) onDoneCallback();
+      };
+      sharedAudioEl.onerror = () => {
+        URL.revokeObjectURL(url);
+        if (onDoneCallback) onDoneCallback();
+      };
+      await sharedAudioEl.play();
+      return true;
+    } catch {
+      // Try next model or fallback
+    }
+  }
+  return false;
+}
+
 function updateSpeakerUI() {
   dom.speakerToggleBtn.classList.toggle("active", state.speakerEnabled);
   dom.speakerToggleBtn.setAttribute("aria-pressed", String(state.speakerEnabled));
@@ -3991,7 +4317,9 @@ function stopSpeech() {
   }
   if ("speechSynthesis" in window) {
     try {
-      window.speechSynthesis.cancel();
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+        window.speechSynthesis.cancel();
+      }
     } catch {
       // Ignore
     }
@@ -4015,19 +4343,11 @@ function speakWithBrowserTTS(fullSpeechText, onDoneCallback) {
   const launchUtterance = () => {
     try {
       const utterance = new SpeechSynthesisUtterance(fullSpeechText);
-      // Keep a global reference so iOS Safari's garbage collector never destroys the utterance mid-speech!
       activeUtteranceRef = utterance;
-      utterance.lang = "en-US";
+      // Do NOT override utterance.voice on iOS/mobile: letting the OS use its default installed system Siri voice
+      // prevents iOS Safari from silently failing on un-downloaded voice profiles!
+      utterance.lang = navigator.language || "en-US";
       utterance.volume = 1.0;
-
-      // Only assign a specific voice if it is a guaranteed local (on-device) voice;
-      // on iOS Safari, assigning a non-downloaded voice silently produces zero audio!
-      const bestVoice = pickBestNaturalBrowserVoice();
-      if (bestVoice && bestVoice.localService !== false) {
-        utterance.voice = bestVoice;
-        if (bestVoice.lang) utterance.lang = bestVoice.lang;
-      }
-
       utterance.rate = 0.98;
       utterance.pitch = 1.0;
       utterance.onend = () => {
@@ -4051,8 +4371,7 @@ function speakWithBrowserTTS(fullSpeechText, onDoneCallback) {
   try {
     if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
       window.speechSynthesis.cancel();
-      // iOS Safari requires a 60ms tick after cancel() before queueing the next speak() call
-      speechResumeTimer = setTimeout(launchUtterance, 60);
+      speechResumeTimer = setTimeout(launchUtterance, 80);
     } else {
       launchUtterance();
     }
@@ -4064,6 +4383,9 @@ function speakWithBrowserTTS(fullSpeechText, onDoneCallback) {
 async function speakCurrentStep(force = false) {
   if (!state.speakerEnabled && !force) return;
   if (!state.recipe) return;
+
+  // Unlock iOS HTML5 Audio channel synchronously during the user's tap gesture
+  unlockMobileAudioMediaChannel();
 
   if (state.currentAudio) {
     try {
@@ -4086,6 +4408,9 @@ async function speakCurrentStep(force = false) {
 
   const resumeMicAfterSpeech = () => {
     state.isCoachSpeaking = false;
+    if (dom.speakerLabel && state.speakerEnabled) {
+      dom.speakerLabel.textContent = "Voice ON";
+    }
     if (state.voiceCommandsListening && dom.screens.cooking.classList.contains("active") && state.voiceRecognition) {
       setTimeout(() => {
         try {
@@ -4103,7 +4428,19 @@ async function speakCurrentStep(force = false) {
   const tipText = stepObj.tip ? ` Coach tip: ${stepObj.tip}` : "";
   const fullSpeechText = `Step ${stepNum}. ${plainInstruction}.${tipText}`;
 
-  // Speak IMMEDIATELY & SYNCHRONOUSLY inside the user's tap event so iOS Safari and mobile browsers never block audio!
+  const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
+
+  // 1. If Gemini API key is configured, try Gemini Native Audio TTS first (plays over HTML5 Media channel,
+  // which bypasses the iPhone Silent/Ring switch and delivers a warm studio voice!)
+  if (geminiKey) {
+    if (dom.speakerLabel && state.speakerEnabled) {
+      dom.speakerLabel.textContent = "Speaking...";
+    }
+    const playedGemini = await tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, resumeMicAfterSpeech);
+    if (playedGemini) return;
+  }
+
+  // 2. Fallback to native OS SpeechSynthesis using the default installed system voice
   speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
 }
 
