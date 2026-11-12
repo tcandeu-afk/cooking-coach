@@ -12,8 +12,8 @@ const state = {
   servings: 2,
   nutritionBasis: "portion", // "portion" | "100g"
   dietary: {
-    "cholesterol-safe": true,
-    "protein-rich": true,
+    "cholesterol-safe": false,
+    "protein-rich": false,
     "fiber-rich": false,
     "no-added-sugar": false,
   },
@@ -102,6 +102,11 @@ const dom = {
   saveRecipeFromIngBtn: document.getElementById("saveRecipeFromIngBtn"),
   recipeTitle: document.getElementById("recipeTitle"),
   recipeSummary: document.getElementById("recipeSummary"),
+  detailPrepTime: document.getElementById("detailPrepTime"),
+  detailDifficulty: document.getElementById("detailDifficulty"),
+  detailServings: document.getElementById("detailServings"),
+  detailStepsCountLabel: document.getElementById("detailStepsCountLabel"),
+  detailStepsPreviewList: document.getElementById("detailStepsPreviewList"),
   nutriBasisTitle: document.getElementById("nutriBasisTitle"),
   toggleBasisIngBtn: document.getElementById("toggleBasisIngBtn"),
   nutritionStrip: document.getElementById("nutritionStrip"),
@@ -246,9 +251,48 @@ function init() {
     });
   }
 
+  // Tweak #4: "Go →" button generates dish options directly
   dom.clearInputBtn.addEventListener("click", () => {
-    dom.cravingInput.value = "";
-    dom.cravingInput.focus();
+    state.regenIndex = 0;
+    state.optionsHistory = [];
+    generateDishOptions();
+  });
+
+  dom.cravingInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      state.regenIndex = 0;
+      state.optionsHistory = [];
+      generateDishOptions();
+    }
+  });
+
+  // Bottom & Desktop 4-destination navigation
+  document.querySelectorAll("[data-nav]").forEach((navBtn) => {
+    navBtn.addEventListener("click", () => {
+      const target = navBtn.dataset.nav;
+      if (target === "preferences") {
+        updateSavedCountBadges();
+        dom.burgerModal.hidden = false;
+        return;
+      }
+      if (target === "recipeBook") {
+        renderRecipeBookScreen();
+        showScreen("recipeBook");
+        return;
+      }
+      if (target === "options") {
+        if (!state.dishOptions || state.dishOptions.length === 0) {
+          state.regenIndex = 0;
+          state.optionsHistory = [];
+          generateDishOptions();
+        } else {
+          showScreen("options");
+        }
+        return;
+      }
+      showScreen("setup");
+    });
   });
 
   // Camera / Pantry Photo Upload
@@ -781,6 +825,20 @@ function showScreen(screenKey) {
   Object.entries(dom.screens).forEach(([key, el]) => {
     el.classList.toggle("active", key === screenKey);
   });
+
+  // Update active navigation tab across mobile bottom bar and desktop nav
+  const activeNavKey =
+    screenKey === "options" || screenKey === "ingredients" || screenKey === "partnerChat" || screenKey === "cooking"
+      ? "options"
+      : screenKey === "recipeBook"
+      ? "recipeBook"
+      : "setup";
+
+  document.querySelectorAll("[data-nav]").forEach((btn) => {
+    if (btn.dataset.nav === "preferences") return;
+    btn.classList.toggle("active", btn.dataset.nav === activeNavKey);
+  });
+
   if (screenKey === "cooking") {
     requestKitchenWakeLock();
   } else {
@@ -1734,7 +1792,7 @@ async function generateDishOptions() {
   } finally {
     dom.findDishesBtn.disabled = false;
     dom.regenerateOptionsBtn.disabled = false;
-    dom.findDishesBtn.querySelector(".btn-main-text").textContent = "Suggest Dish Options →";
+    dom.findDishesBtn.querySelector(".btn-main-text").textContent = "Suggest Dish Options";
     dom.regenerateOptionsBtn.textContent = "🔄 Regenerate";
   }
 }
@@ -2983,24 +3041,26 @@ async function tryFetchLiveOptionsOpenAI(promptText, apiKey) {
 
 // ---------------- RENDER SCREEN 2: HANDFUL OF DISH OPTIONS + CONFLICT BANNER + TWEAK BAR ----------------
 function renderDishOptionsScreen(promptText) {
-  const pageNum = state.regenIndex + 1;
-  dom.optionsSubtitle.textContent = `Set #${pageNum} • 3 dishes crafted for "${promptText}" (${state.servings} servings)`;
+  if (dom.optionsSubtitle) {
+    dom.optionsSubtitle.hidden = true;
+    dom.optionsSubtitle.textContent = "";
+  }
   if (dom.prevOptionsBtn) {
     dom.prevOptionsBtn.hidden = state.regenIndex <= 0;
   }
   dom.optionsDietaryBadges.innerHTML = "";
 
-  // Clean Dietary Priority Badges ONLY (No "✨ Gemini Argon" clutter at the top!)
+  // Clean Dietary Priority Badges ONLY
   if (state.dietary["cholesterol-safe"]) appendBadgeTo(dom.optionsDietaryBadges, "❤️ Cholesterol Safe");
   if (state.dietary["protein-rich"]) appendBadgeTo(dom.optionsDietaryBadges, "💪 Protein Rich");
   if (state.dietary["fiber-rich"]) appendBadgeTo(dom.optionsDietaryBadges, "🌾 Fiber Rich");
   if (state.dietary["no-added-sugar"]) appendBadgeTo(dom.optionsDietaryBadges, "🚫 No Added Sugar");
   if (state.otherDietaryText) appendBadgeTo(dom.optionsDietaryBadges, `✨ ${state.otherDietaryText}`);
   if (dom.optionsDietaryBadges.children.length === 0) {
-    appendBadgeTo(dom.optionsDietaryBadges, "🍽️ Maximum Taste Priority");
+    appendBadgeTo(dom.optionsDietaryBadges, "🍽️ Maximum Taste");
   }
 
-  // Re-compute USDA/CoFID nutrition for each option & check for Dietary Conflicts (e.g. Bacon + Cholesterol Safe)
+  // Re-compute USDA/CoFID nutrition for each option & check for Dietary Conflicts
   let anyConflict = null;
   state.dishOptions.forEach((opt) => {
     const calc = computeRecipeNutritionAndConflicts(opt);
@@ -3035,37 +3095,38 @@ function renderDishOptionsScreen(promptText) {
   state.dishOptions.forEach((opt) => {
     const calc = opt.computedNutrition || computeRecipeNutritionAndConflicts(opt);
     const activeNutri = state.nutritionBasis === "100g" ? calc.per100g : calc.portion;
-    const isCholWarn = activeNutri.cholMgNum > 75 || activeNutri.satFatNum > 5.0;
+    const isSatFatWarn = activeNutri.satFatNum > 5.0;
+    const difficulty = (opt.steps?.length || 3) <= 3 ? "Easy" : "Medium";
 
     const card = document.createElement("div");
     card.className = "dish-option-card";
     card.innerHTML = `
       <div class="dish-card-top">
         <span class="dish-style-tag">${opt.styleTag || "Chef Option"}</span>
-        <span class="dish-time-tag">⏱️ ${opt.prepTime || "15 mins"} • ${activeNutri.kcal} (${activeNutri.basisLabel})</span>
+        <span class="dish-time-tag">⏱️ ${opt.prepTime || "15 mins"} • ${difficulty}</span>
       </div>
       <h2 class="dish-card-title">${opt.title}</h2>
       <p class="dish-card-desc">${opt.summary}</p>
-      <div class="dish-diet-Modification ${calc.hasConflict ? "conflict" : ""}">${opt.dietaryNote || "Tailored to your dietary goals"}</div>
       <div class="nutrition-strip four-cols">
         <div class="nutri-pill">
+          <span class="nutri-val">${activeNutri.kcal.replace(" kcal", "")}</span>
+          <span class="nutri-lbl">Calories</span>
+        </div>
+        <div class="nutri-pill">
           <span class="nutri-val">${activeNutri.protein}</span>
-          <span class="nutri-lbl">Protein (${state.nutritionBasis === "100g" ? "/100g" : "/portion"})</span>
+          <span class="nutri-lbl">Protein</span>
         </div>
         <div class="nutri-pill">
           <span class="nutri-val">${activeNutri.fiber}</span>
-          <span class="nutri-lbl">Fiber (${state.nutritionBasis === "100g" ? "/100g" : "/portion"})</span>
+          <span class="nutri-lbl">Fibre</span>
         </div>
-        <div class="nutri-pill ${isCholWarn ? "warn" : ""}">
-          <span class="nutri-val">${activeNutri.cholesterol}</span>
-          <span class="nutri-lbl">Cholesterol & SatFat</span>
-        </div>
-        <div class="nutri-pill ${activeNutri.addedSugarNum > 5 ? "warn" : ""}">
-          <span class="nutri-val">${activeNutri.addedSugar}</span>
-          <span class="nutri-lbl">Added Sugar</span>
+        <div class="nutri-pill ${isSatFatWarn ? "warn" : ""}">
+          <span class="nutri-val">${activeNutri.satFatNum} g</span>
+          <span class="nutri-lbl">Sat. Fat</span>
         </div>
       </div>
-      <button type="button" class="select-dish-btn">Check Ingredients for This Dish →</button>
+      <div class="dish-diet-Modification ${calc.hasConflict ? "conflict" : ""}">${opt.dietaryNote || "Tailored to your dietary goals"}</div>
+      <button type="button" class="select-dish-btn">View recipe</button>
     `;
 
     card.querySelector(".select-dish-btn").addEventListener("click", () => {
@@ -3200,7 +3261,7 @@ function renderIngredientsScreen() {
 
   const calc = computeRecipeNutritionAndConflicts(r);
   const activeNutri = state.nutritionBasis === "100g" ? calc.per100g : calc.portion;
-  const isCholWarn = activeNutri.cholMgNum > 75 || activeNutri.satFatNum > 5.0;
+  const isSatFatWarn = activeNutri.satFatNum > 5.0;
 
   dom.recipeBadges.innerHTML = "";
   if (state.dietary["cholesterol-safe"]) appendBadgeTo(dom.recipeBadges, "❤️ Cholesterol Safe");
@@ -3209,20 +3270,24 @@ function renderIngredientsScreen() {
   if (state.dietary["no-added-sugar"]) appendBadgeTo(dom.recipeBadges, "🚫 No Added Sugar");
   if (state.otherDietaryText) appendBadgeTo(dom.recipeBadges, `✨ ${state.otherDietaryText}`);
   if (dom.recipeBadges.children.length === 0) {
-    appendBadgeTo(dom.recipeBadges, "🍽️ Maximum Taste Priority");
+    appendBadgeTo(dom.recipeBadges, "🍽️ Maximum Taste");
   }
 
   if (dom.saveRecipeFromIngBtn) {
     const isAlreadySaved = state.savedRecipes.some((s) => s.title === r.title);
     dom.saveRecipeFromIngBtn.classList.toggle("saved", isAlreadySaved);
-    dom.saveRecipeFromIngBtn.textContent = isAlreadySaved ? "❤️ Saved in Book" : "🤍 Save to Recipe Book";
+    dom.saveRecipeFromIngBtn.textContent = isAlreadySaved ? "❤️ Saved" : "🤍 Save";
   }
 
   dom.recipeTitle.textContent = r.title;
   dom.recipeSummary.textContent = r.summary;
 
+  if (dom.detailPrepTime) dom.detailPrepTime.textContent = r.prepTime || "15 mins";
+  if (dom.detailDifficulty) dom.detailDifficulty.textContent = (r.steps?.length || 3) <= 3 ? "Easy" : "Medium";
+  if (dom.detailServings) dom.detailServings.textContent = String(state.servings);
+
   if (dom.nutriBasisTitle) {
-    dom.nutriBasisTitle.textContent = `USDA/CoFID Ingredient Calculation • ${activeNutri.basisLabel} (${activeNutri.kcal})`;
+    dom.nutriBasisTitle.textContent = `${activeNutri.basisLabel} • Cholesterol: ${activeNutri.cholMgNum} mg • Added Sugar: ${activeNutri.addedSugar}`;
   }
   if (dom.toggleBasisIngBtn) {
     dom.toggleBasisIngBtn.textContent =
@@ -3231,24 +3296,46 @@ function renderIngredientsScreen() {
 
   dom.nutritionStrip.innerHTML = `
     <div class="nutri-pill">
+      <span class="nutri-val">${activeNutri.kcal.replace(" kcal", "")}</span>
+      <span class="nutri-lbl">Calories</span>
+    </div>
+    <div class="nutri-pill">
       <span class="nutri-val">${activeNutri.protein}</span>
-      <span class="nutri-lbl">Protein (${state.nutritionBasis === "100g" ? "/100g" : "/portion"})</span>
+      <span class="nutri-lbl">Protein</span>
     </div>
     <div class="nutri-pill">
       <span class="nutri-val">${activeNutri.fiber}</span>
-      <span class="nutri-lbl">Dietary Fiber</span>
+      <span class="nutri-lbl">Fibre</span>
     </div>
-    <div class="nutri-pill ${isCholWarn ? "warn" : ""}">
-      <span class="nutri-val">${activeNutri.cholesterol}</span>
-      <span class="nutri-lbl">Cholesterol & SatFat</span>
-    </div>
-    <div class="nutri-pill ${activeNutri.addedSugarNum > 5 ? "warn" : ""}">
-      <span class="nutri-val">${activeNutri.addedSugar}</span>
-      <span class="nutri-lbl">Added Sugar</span>
+    <div class="nutri-pill ${isSatFatWarn ? "warn" : ""}">
+      <span class="nutri-val">${activeNutri.satFatNum} g</span>
+      <span class="nutri-lbl">Sat. Fat</span>
     </div>
   `;
 
   renderIngredientRows();
+  renderDetailStepsPreview();
+}
+
+function renderDetailStepsPreview() {
+  const r = state.recipe;
+  if (!r || !dom.detailStepsPreviewList) return;
+  if (dom.detailStepsCountLabel) {
+    dom.detailStepsCountLabel.textContent = `${r.steps.length} steps`;
+  }
+  dom.detailStepsPreviewList.innerHTML = "";
+  r.steps.forEach((step, idx) => {
+    const item = document.createElement("div");
+    item.className = "detail-step-item";
+    item.innerHTML = `
+      <div class="detail-step-num">${idx + 1}</div>
+      <div class="detail-step-body">
+        <span class="detail-step-phase">${step.phase || `Step ${idx + 1}`}</span>
+        <div>${formatStepInstructionHTML(step.instruction, true)}</div>
+      </div>
+    `;
+    dom.detailStepsPreviewList.appendChild(item);
+  });
 }
 
 function renderIngredientRows() {
@@ -3342,7 +3429,7 @@ function handleAddExtraIngredient() {
   showAdaptationNotification(
     `🧠 AI Coach integrated "${cleanName}" (${qtyMetric}) into Step ${targetStepIdx + 1} of your preparation!`
   );
-  renderIngredientRows();
+  renderIngredientsScreen();
 }
 
 // ---------------- SMART SWAP ENGINE (RE-ENGINEERS STEPS OR SUGGESTS PIVOT) ----------------
@@ -3475,27 +3562,14 @@ function handleMakeItNow() {
 
 function openKitchenPartnerChat(uncheckedList) {
   const r = state.recipe;
-  const modelName = state.selectedModel === "gemini-argon" ? "Gemini Argon" : "ChatGPT";
   dom.partnerChatSubtitle.textContent = `Working together on ${r.title}`;
   dom.partnerChatStream.innerHTML = "";
 
-  const missingNames = uncheckedList.map((i) => i.name.replace(/\s*\([^)]*\)/g, "")).join(", ");
   const haveList = r.ingredients
     .filter((i) => i.checked)
     .map((i) => i.name.replace(/\s*\([^)]*\)/g, ""));
 
-  // 1. Opening Coach Message
-  const introBubble = document.createElement("div");
-  introBubble.className = "chat-bubble coach";
-  introBubble.innerHTML = `
-    <span class="chat-sender-tag">👩‍🍳 ${modelName} Kitchen Partner</span>
-    <div>
-      I noticed you don't have <strong>${missingNames}</strong> on hand right now. No stress at all—let's adapt! Here is what we can do for each missing item, or tell me below what's in your fridge:
-    </div>
-  `;
-  dom.partnerChatStream.appendChild(introBubble);
-
-  // 2. Interactive Solution Card for each missing ingredient
+  // Interactive Solution Card for each missing ingredient (Tweak #7: no introductory coach bubble)
   uncheckedList.forEach((missingIng) => {
     const ingIndex = r.ingredients.findIndex((x) => x.id === missingIng.id);
     const shortMissing = missingIng.name.replace(/\s*\([^)]*\)/g, "");
@@ -4304,20 +4378,20 @@ function renderDoneScreen() {
   dom.doneNutritionSummary.innerHTML = `
     <div class="nutrition-strip four-cols">
       <div class="nutri-pill">
+        <span class="nutri-val">${p.kcal.replace(" kcal", "")}</span>
+        <span class="nutri-lbl">Calories</span>
+      </div>
+      <div class="nutri-pill">
         <span class="nutri-val">${p.protein}</span>
-        <span class="nutri-lbl">Protein / portion</span>
+        <span class="nutri-lbl">Protein</span>
       </div>
       <div class="nutri-pill">
         <span class="nutri-val">${p.fiber}</span>
-        <span class="nutri-lbl">Fiber / portion</span>
+        <span class="nutri-lbl">Fibre</span>
       </div>
       <div class="nutri-pill">
-        <span class="nutri-val">${p.cholesterol}</span>
-        <span class="nutri-lbl">Cholesterol</span>
-      </div>
-      <div class="nutri-pill">
-        <span class="nutri-val">${p.addedSugar}</span>
-        <span class="nutri-lbl">Added Sugar</span>
+        <span class="nutri-val">${p.satFatNum} g</span>
+        <span class="nutri-lbl">Sat. Fat</span>
       </div>
     </div>
   `;
@@ -4402,23 +4476,23 @@ function renderRecipeBookScreen() {
       </div>
       <div class="nutrition-strip four-cols">
         <div class="nutri-pill">
+          <span class="nutri-val">${p.kcal.replace(" kcal", "")}</span>
+          <span class="nutri-lbl">Calories</span>
+        </div>
+        <div class="nutri-pill">
           <span class="nutri-val">${p.protein}</span>
           <span class="nutri-lbl">Protein</span>
         </div>
         <div class="nutri-pill">
           <span class="nutri-val">${p.fiber}</span>
-          <span class="nutri-lbl">Fiber</span>
+          <span class="nutri-lbl">Fibre</span>
         </div>
         <div class="nutri-pill">
-          <span class="nutri-val">${p.cholesterol}</span>
-          <span class="nutri-lbl">Cholesterol</span>
-        </div>
-        <div class="nutri-pill">
-          <span class="nutri-val">${p.addedSugar}</span>
-          <span class="nutri-lbl">Added Sugar</span>
+          <span class="nutri-val">${p.satFatNum} g</span>
+          <span class="nutri-lbl">Sat. Fat</span>
         </div>
       </div>
-      <button type="button" class="select-dish-btn cook-saved-btn">Cook This Recipe Again →</button>
+      <button type="button" class="select-dish-btn cook-saved-btn">View recipe</button>
     `;
 
     card.querySelectorAll(".mini-star-btn").forEach((starBtn) => {
