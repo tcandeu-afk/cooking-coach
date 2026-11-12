@@ -4205,9 +4205,6 @@ function renderCurrentStep(shouldAutoSpeak = false) {
 let sharedAudioEl = null;
 let sharedAudioCtx = null;
 let activeWebAudioSource = null;
-// 1-sample silent WAV data URI to synchronously unlock iOS Safari HTML5 <audio> on the user's tap gesture
-const SILENT_WAV_DATA_URI =
-  "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 
 function unlockMobileAudioMediaChannel() {
   try {
@@ -4215,34 +4212,23 @@ function unlockMobileAudioMediaChannel() {
       sharedAudioEl = new Audio();
       sharedAudioEl.playsInline = true;
     }
-    // Synchronously play a silent frame on the tap gesture so iOS Safari unlocks sharedAudioEl
-    // for playback even after an async fetch() completes!
-    if (!sharedAudioEl.dataset?.unlocked) {
-      sharedAudioEl.src = SILENT_WAV_DATA_URI;
-      sharedAudioEl.volume = 0.01;
-      const p = sharedAudioEl.play();
-      if (p && typeof p.then === "function") {
-        p.then(() => {
-          sharedAudioEl.dataset.unlocked = "true";
-          sharedAudioEl.volume = 1.0;
-        }).catch(() => {
-          sharedAudioEl.volume = 1.0;
-        });
-      }
-    }
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (AudioCtx && !sharedAudioCtx) {
       sharedAudioCtx = new AudioCtx();
     }
-    if (sharedAudioCtx && sharedAudioCtx.state === "suspended") {
-      sharedAudioCtx.resume();
-    }
-    // Also synchronously prime iOS Web Speech API within the user gesture
-    if ("speechSynthesis" in window && !window.__chefcoachSpeechPrimed) {
-      window.__chefcoachSpeechPrimed = true;
-      const primer = new SpeechSynthesisUtterance("");
-      primer.volume = 0;
-      window.speechSynthesis.speak(primer);
+    if (sharedAudioCtx) {
+      if (sharedAudioCtx.state === "suspended") {
+        sharedAudioCtx.resume();
+      }
+      // Play a 1-sample Web Audio buffer synchronously on tap to unlock iOS Safari AudioContext
+      if (!sharedAudioCtx.__unlocked) {
+        const silentBuf = sharedAudioCtx.createBuffer(1, 1, 22050);
+        const src = sharedAudioCtx.createBufferSource();
+        src.buffer = silentBuf;
+        src.connect(sharedAudioCtx.destination);
+        src.start(0);
+        sharedAudioCtx.__unlocked = true;
+      }
     }
   } catch {
     // Ignore audio context init errors
@@ -4302,7 +4288,7 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
   }
 
   const promise = (async () => {
-    const ttsModels = ["gemini-2.5-flash-preview-tts"];
+    const ttsModels = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
 
     for (const modelId of ttsModels) {
       try {
@@ -4312,7 +4298,7 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              contents: [{ parts: [{ text: `Read concisely and naturally: ${fullSpeechText}` }] }],
+              contents: [{ parts: [{ text: `Read this cooking step clearly and warmly: ${fullSpeechText}` }] }],
               generationConfig: {
                 responseModalities: ["AUDIO"],
                 speechConfig: {
