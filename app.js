@@ -1769,6 +1769,10 @@ async function generateDishOptions() {
 
   dom.findDishesBtn.disabled = true;
   dom.regenerateOptionsBtn.disabled = true;
+  if (dom.clearInputBtn) {
+    dom.clearInputBtn.disabled = true;
+    dom.clearInputBtn.textContent = "⏳ Thinking...";
+  }
   dom.findDishesBtn.querySelector(".btn-main-text").textContent = `${modelLabel} is thinking...`;
   dom.regenerateOptionsBtn.textContent = "⏳ Thinking...";
 
@@ -1794,6 +1798,10 @@ async function generateDishOptions() {
   } finally {
     dom.findDishesBtn.disabled = false;
     dom.regenerateOptionsBtn.disabled = false;
+    if (dom.clearInputBtn) {
+      dom.clearInputBtn.disabled = false;
+      dom.clearInputBtn.textContent = "Go →";
+    }
     dom.findDishesBtn.querySelector(".btn-main-text").textContent = "Suggest Dish Options";
     dom.regenerateOptionsBtn.textContent = "🔄 Regenerate";
   }
@@ -3068,7 +3076,7 @@ function renderDishOptionsScreen(promptText) {
   });
 
   if (dom.dietaryConflictBanner) {
-    dom.dietaryConflictBanner.hidden = true;
+    dom.dietaryConflictBanner.remove();
   }
 
   dom.dishOptionsContainer.innerHTML = "";

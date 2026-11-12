@@ -762,31 +762,14 @@ h2. dish-card-title {
   color: var(--green-primary);
 }
 
-/* Conflict Warning Banner */
-.conflict-warning-banner {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border-radius: var(--radius-md);
-  background: #FEF6F5;
-  border: 1px solid #F5C6C2;
-  color: #8A261D;
-  font-size: 13.5px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* Global [hidden] safeguard so flex/grid never override the HTML hidden attribute */
+[hidden] {
+  display: none !important;
 }
 
-.conflict-fix-btn {
-  align-self: flex-start;
-  border: none;
-  background: #8A261D;
-  color: #FFFFFF;
-  font-family: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
-  padding: 6px 12px;
-  border-radius: var(--radius-pill);
-  cursor: pointer;
+/* Conflict Warning Banner (permanently hidden) */
+.conflict-warning-banner {
+  display: none !important;
 }
 
 /* Tweak Bar */
