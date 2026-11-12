@@ -4177,11 +4177,13 @@ function renderCurrentStep(shouldAutoSpeak = false) {
 }
 
 // ---------------- HIGH-QUALITY NATURAL VOICE ENGINE ----------------
-// Priority 1: Gemini 2.5 Flash Native Audio TTS (works on iPhone even when Mute/Silent switch is ON!)
-// Priority 2: OpenAI Neural TTS ("nova" / "shimmer" / "onyx")
-// Priority 3: Default iOS/Browser SpeechSynthesis (without overriding utterance.voice so iOS never picks an un-downloaded voice)
+// Priority 1: Gemini Native Audio TTS (plays over HTML5 Media channel, bypassing iPhone Silent switch)
+// Priority 2: Default iOS/Browser SpeechSynthesis (called synchronously on tap when Gemini TTS isn't available)
 let sharedAudioEl = null;
 let sharedAudioCtx = null;
+// 1-sample silent WAV data URI to synchronously unlock iOS Safari HTML5 <audio> on the user's tap gesture
+const SILENT_WAV_DATA_URI =
+  "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 
 function unlockMobileAudioMediaChannel() {
   try {
@@ -4189,12 +4191,34 @@ function unlockMobileAudioMediaChannel() {
       sharedAudioEl = new Audio();
       sharedAudioEl.playsInline = true;
     }
+    // Synchronously play a silent frame on the tap gesture so iOS Safari unlocks sharedAudioEl
+    // for playback even after an async fetch() completes!
+    if (!sharedAudioEl.dataset?.unlocked) {
+      sharedAudioEl.src = SILENT_WAV_DATA_URI;
+      sharedAudioEl.volume = 0.01;
+      const p = sharedAudioEl.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          sharedAudioEl.dataset.unlocked = "true";
+          sharedAudioEl.volume = 1.0;
+        }).catch(() => {
+          sharedAudioEl.volume = 1.0;
+        });
+      }
+    }
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (AudioCtx && !sharedAudioCtx) {
       sharedAudioCtx = new AudioCtx();
     }
     if (sharedAudioCtx && sharedAudioCtx.state === "suspended") {
       sharedAudioCtx.resume();
+    }
+    // Also synchronously prime iOS Web Speech API within the user gesture
+    if ("speechSynthesis" in window && !window.__chefcoachSpeechPrimed) {
+      window.__chefcoachSpeechPrimed = true;
+      const primer = new SpeechSynthesisUtterance("");
+      primer.volume = 0;
+      window.speechSynthesis.speak(primer);
     }
   } catch {
     // Ignore audio context init errors
@@ -4237,6 +4261,8 @@ function createWavBlobFromBase64Pcm(base64Pcm, sampleRate = 24000) {
 
 async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback) {
   const ttsModels = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
+  let gotModelNotFound = false;
+
   for (const modelId of ttsModels) {
     try {
       const res = await fetch(
@@ -4259,7 +4285,12 @@ async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback)
           }),
         }
       );
-      if (!res.ok) continue;
+      if (!res.ok) {
+        if (res.status === 404 || res.status === 400 || res.status === 403) {
+          gotModelNotFound = true;
+        }
+        continue;
+      }
       const data = await res.json();
       const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
       if (!inlineData?.data) continue;
@@ -4279,6 +4310,7 @@ async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback)
 
       const url = URL.createObjectURL(audioBlob);
       if (!sharedAudioEl) sharedAudioEl = new Audio();
+      sharedAudioEl.volume = 1.0;
       sharedAudioEl.src = url;
       state.currentAudio = sharedAudioEl;
       sharedAudioEl.onended = () => {
@@ -4289,11 +4321,33 @@ async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback)
         URL.revokeObjectURL(url);
         if (onDoneCallback) onDoneCallback();
       };
-      await sharedAudioEl.play();
-      return true;
+      try {
+        await sharedAudioEl.play();
+        return true;
+      } catch {
+        // If HTMLAudioElement play() was blocked, decode and play via unlocked Web AudioContext!
+        if (sharedAudioCtx) {
+          const arrayBuf = await audioBlob.arrayBuffer();
+          const decoded = await sharedAudioCtx.decodeAudioData(arrayBuf);
+          const source = sharedAudioCtx.createBufferSource();
+          source.buffer = decoded;
+          source.connect(sharedAudioCtx.destination);
+          source.onended = () => {
+            URL.revokeObjectURL(url);
+            if (onDoneCallback) onDoneCallback();
+          };
+          source.start(0);
+          return true;
+        }
+      }
     } catch {
       // Try next model or fallback
     }
+  }
+
+  if (gotModelNotFound) {
+    // Remember that this Gemini key doesn't have TTS model access so future taps use instant synchronous voice
+    localStorage.setItem("chefcoach_gemini_tts_disabled", "true");
   }
   return false;
 }
@@ -4429,10 +4483,10 @@ async function speakCurrentStep(force = false) {
   const fullSpeechText = `Step ${stepNum}. ${plainInstruction}.${tipText}`;
 
   const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
+  const geminiTtsDisabled = localStorage.getItem("chefcoach_gemini_tts_disabled") === "true";
 
-  // 1. If Gemini API key is configured, try Gemini Native Audio TTS first (plays over HTML5 Media channel,
-  // which bypasses the iPhone Silent/Ring switch and delivers a warm studio voice!)
-  if (geminiKey) {
+  // 1. If Gemini API key is configured & supports TTS, try Gemini Native Audio TTS first
+  if (geminiKey && !geminiTtsDisabled) {
     if (dom.speakerLabel && state.speakerEnabled) {
       dom.speakerLabel.textContent = "Speaking...";
     }
@@ -4440,7 +4494,7 @@ async function speakCurrentStep(force = false) {
     if (playedGemini) return;
   }
 
-  // 2. Fallback to native OS SpeechSynthesis using the default installed system voice
+  // 2. Fallback to native OS SpeechSynthesis (now synchronously reached on tap!)
   speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
 }
 
