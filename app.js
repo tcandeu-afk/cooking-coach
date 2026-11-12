@@ -199,6 +199,7 @@ const dom = {
 
 // ---------------- INITIALIZATION ----------------
 function init() {
+  localStorage.removeItem("chefcoach_gemini_tts_disabled");
   dom.geminiKeyInput.value = localStorage.getItem("chefcoach_gemini_key") || "";
   dom.openaiKeyInput.value = localStorage.getItem("chefcoach_openai_key") || "";
   dom.voiceStyleSelect.value = state.voiceStyle;
@@ -467,6 +468,7 @@ function init() {
   }
   if (dom.proceedFromChatToCookBtn) {
     dom.proceedFromChatToCookBtn.addEventListener("click", () => {
+      unlockMobileAudioMediaChannel();
       finalizeUncheckedAdaptations();
       state.currentStepIndex = 0;
       showScreen("cooking");
@@ -3774,6 +3776,7 @@ function showAdaptationNotification(message, showPivotBtn = false) {
 
 // ---------------- "MAKE IT NOW" & KITCHEN PARTNER CHAT HUDDLE ----------------
 function handleMakeItNow() {
+  unlockMobileAudioMediaChannel();
   const r = state.recipe;
   if (!r) return;
 
@@ -4188,11 +4191,8 @@ function renderCurrentStep(shouldAutoSpeak = false) {
     dom.nextStepSubText.textContent = `Up next: Step ${idx + 2} of ${total} (or say "Next")`;
   }
 
-  // Pre-fetch audio for current and next step in the background so Voice ON / Next Step plays instantaneously!
+  // Pre-fetch current step audio in the background (1 request at a time to avoid Gemini rate limits)
   prefetchStepAudio(idx);
-  if (idx + 1 < total) {
-    prefetchStepAudio(idx + 1);
-  }
 
   if (shouldAutoSpeak && state.speakerEnabled) {
     speakCurrentStep(true);
@@ -4204,6 +4204,7 @@ function renderCurrentStep(shouldAutoSpeak = false) {
 // Priority 2: Default iOS/Browser SpeechSynthesis (called synchronously on tap when Gemini TTS isn't available)
 let sharedAudioEl = null;
 let sharedAudioCtx = null;
+let activeWebAudioSource = null;
 // 1-sample silent WAV data URI to synchronously unlock iOS Safari HTML5 <audio> on the user's tap gesture
 const SILENT_WAV_DATA_URI =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
@@ -4293,6 +4294,8 @@ function buildStepSpeechText(stepIndex) {
   return `Step ${stepIndex + 1}. ${plainInstruction}.${tipText}`;
 }
 
+let sessionGeminiTtsUnsupported = false;
+
 function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
   if (geminiTtsAudioCache.has(fullSpeechText)) {
     return geminiTtsAudioCache.get(fullSpeechText);
@@ -4300,7 +4303,6 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
 
   const promise = (async () => {
     const ttsModels = ["gemini-2.5-flash-preview-tts"];
-    let gotModelNotFound = false;
 
     for (const modelId of ttsModels) {
       try {
@@ -4325,8 +4327,8 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
           }
         );
         if (!res.ok) {
-          if (res.status === 404 || res.status === 400 || res.status === 403) {
-            gotModelNotFound = true;
+          if (res.status === 404) {
+            sessionGeminiTtsUnsupported = true;
           }
           continue;
         }
@@ -4349,9 +4351,6 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
       }
     }
 
-    if (gotModelNotFound) {
-      localStorage.setItem("chefcoach_gemini_tts_disabled", "true");
-    }
     geminiTtsAudioCache.delete(fullSpeechText);
     return null;
   })();
@@ -4362,8 +4361,7 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
 
 function prefetchStepAudio(stepIndex) {
   const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
-  const geminiTtsDisabled = localStorage.getItem("chefcoach_gemini_tts_disabled") === "true";
-  if (!geminiKey || geminiTtsDisabled) return;
+  if (!geminiKey || sessionGeminiTtsUnsupported) return;
   const text = buildStepSpeechText(stepIndex);
   if (text && !geminiTtsAudioCache.has(text)) {
     fetchGeminiTtsBlob(text, geminiKey);
@@ -4373,6 +4371,11 @@ function prefetchStepAudio(stepIndex) {
 async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback, requestToken) {
   const audioBlob = await fetchGeminiTtsBlob(fullSpeechText, geminiKey);
   if (!audioBlob || requestToken !== activeTtsRequestToken) return false;
+
+  // Now that current step audio is ready, pre-fetch the next step cleanly in the background
+  if (state.recipe && state.currentStepIndex + 1 < state.recipe.steps.length) {
+    prefetchStepAudio(state.currentStepIndex + 1);
+  }
 
   const url = URL.createObjectURL(audioBlob);
   if (!sharedAudioEl) sharedAudioEl = new Audio();
@@ -4387,12 +4390,26 @@ async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback,
     URL.revokeObjectURL(url);
     if (onDoneCallback) onDoneCallback();
   };
+
   try {
     await sharedAudioEl.play();
     return true;
-  } catch {
+  } catch (err) {
+    // If interrupted by the silent unlock frame still loading, retry once after 60ms
+    if (err && err.name === "AbortError") {
+      await new Promise((r) => setTimeout(r, 60));
+      try {
+        await sharedAudioEl.play();
+        return true;
+      } catch {
+        // Continue to Web Audio fallback below
+      }
+    }
     if (sharedAudioCtx) {
       try {
+        if (sharedAudioCtx.state === "suspended") {
+          await sharedAudioCtx.resume();
+        }
         const arrayBuf = await audioBlob.arrayBuffer();
         const decoded = await sharedAudioCtx.decodeAudioData(arrayBuf);
         if (requestToken !== activeTtsRequestToken) {
@@ -4402,7 +4419,9 @@ async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback,
         const source = sharedAudioCtx.createBufferSource();
         source.buffer = decoded;
         source.connect(sharedAudioCtx.destination);
+        activeWebAudioSource = source;
         source.onended = () => {
+          activeWebAudioSource = null;
           URL.revokeObjectURL(url);
           if (onDoneCallback) onDoneCallback();
         };
@@ -4426,6 +4445,14 @@ function updateSpeakerUI() {
 function stopSpeech() {
   activeTtsRequestToken++;
   state.isCoachSpeaking = false;
+  if (activeWebAudioSource) {
+    try {
+      activeWebAudioSource.stop();
+    } catch {
+      // Ignore
+    }
+    activeWebAudioSource = null;
+  }
   if (state.currentAudio) {
     try {
       state.currentAudio.pause();
@@ -4545,10 +4572,9 @@ async function speakCurrentStep(force = false) {
   const fullSpeechText = buildStepSpeechText(state.currentStepIndex);
 
   const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
-  const geminiTtsDisabled = localStorage.getItem("chefcoach_gemini_tts_disabled") === "true";
 
-  // 1. If Gemini API key is configured & supports TTS, play pre-cached/generated Gemini Native Audio
-  if (geminiKey && !geminiTtsDisabled) {
+  // 1. If Gemini API key is configured & supported, play pre-cached/generated Gemini Native Audio
+  if (geminiKey && !sessionGeminiTtsUnsupported) {
     if (dom.speakerLabel && state.speakerEnabled && !geminiTtsAudioCache.has(fullSpeechText)) {
       dom.speakerLabel.textContent = "Loading...";
     }
