@@ -251,12 +251,22 @@ function init() {
     });
   }
 
-  // Tweak #4: "Go →" button generates dish options directly
-  dom.clearInputBtn.addEventListener("click", () => {
+  // Tweak #4: "Go →" button generates dish options directly (works even while mobile keyboard is open)
+  let isGeneratingDishes = false;
+  const triggerGoFromInput = (e) => {
+    if (e) e.preventDefault();
+    if (isGeneratingDishes) return;
+    if (dom.cravingInput) dom.cravingInput.blur();
     state.regenIndex = 0;
     state.optionsHistory = [];
     generateDishOptions();
+  };
+
+  dom.clearInputBtn.addEventListener("pointerdown", (e) => {
+    // Prevent textarea blur from swallowing the first tap on iOS Safari while keyboard is up
+    e.preventDefault();
   });
+  dom.clearInputBtn.addEventListener("click", triggerGoFromInput);
 
   dom.cravingInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1771,10 +1781,14 @@ async function generateDishOptions() {
   dom.regenerateOptionsBtn.disabled = true;
   if (dom.clearInputBtn) {
     dom.clearInputBtn.disabled = true;
-    dom.clearInputBtn.textContent = "⏳ Thinking...";
+    dom.clearInputBtn.classList.add("loading");
+    dom.clearInputBtn.innerHTML = `<span class="btn-spinner"></span><span>Thinking...</span>`;
   }
   dom.findDishesBtn.querySelector(".btn-main-text").textContent = `${modelLabel} is thinking...`;
   dom.regenerateOptionsBtn.textContent = "⏳ Thinking...";
+
+  // Yield a minimum visible feedback window so the user always sees the "Thinking..." spinner on the Go button
+  const minVisualFeedback = new Promise((resolve) => setTimeout(resolve, 480));
 
   try {
     let options = null;
@@ -1791,6 +1805,8 @@ async function generateDishOptions() {
       options = buildMultiOptionsWithCulinaryAI(promptText, state.regenIndex);
     }
 
+    await minVisualFeedback;
+
     state.dishOptions = options;
     state.optionsHistory[state.regenIndex] = JSON.parse(JSON.stringify(options));
     renderDishOptionsScreen(promptText);
@@ -1800,7 +1816,8 @@ async function generateDishOptions() {
     dom.regenerateOptionsBtn.disabled = false;
     if (dom.clearInputBtn) {
       dom.clearInputBtn.disabled = false;
-      dom.clearInputBtn.textContent = "Go →";
+      dom.clearInputBtn.classList.remove("loading");
+      dom.clearInputBtn.innerHTML = "Go →";
     }
     dom.findDishesBtn.querySelector(".btn-main-text").textContent = "Suggest Dish Options";
     dom.regenerateOptionsBtn.textContent = "🔄 Regenerate";

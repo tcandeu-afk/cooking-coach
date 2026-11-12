@@ -408,11 +408,39 @@ h2. dish-card-title {
   padding: 8px 16px;
   border-radius: var(--radius-pill);
   cursor: pointer;
-  transition: background 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s ease, opacity 0.15s ease;
 }
 
 .go-input-btn:hover {
   background: var(--green-hover);
+}
+
+.go-input-btn.loading,
+.go-input-btn:disabled {
+  background: var(--text-main);
+  color: #FFFFFF;
+  opacity: 0.92;
+  cursor: wait;
+}
+
+@keyframes spinLoader {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #FFFFFF;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spinLoader 0.65s linear infinite;
 }
 
 /* Photo Preview Card */
