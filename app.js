@@ -502,11 +502,23 @@ function init() {
     dom.voiceCommandToggleBtn.addEventListener("click", toggleHandsFreeVoiceCommands);
   }
 
+  const turnOffVoiceOnExit = () => {
+    stopSpeech();
+    if (state.speakerEnabled) {
+      state.speakerEnabled = false;
+      updateSpeakerUI();
+    }
+  };
+
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && dom.screens.cooking.classList.contains("active")) {
+    if (document.visibilityState === "hidden") {
+      turnOffVoiceOnExit();
+    } else if (document.visibilityState === "visible" && dom.screens.cooking.classList.contains("active")) {
       requestKitchenWakeLock();
     }
   });
+  window.addEventListener("pagehide", turnOffVoiceOnExit);
+  window.addEventListener("beforeunload", turnOffVoiceOnExit);
 
   dom.prevStepBtn.addEventListener("click", () => {
     if (state.currentStepIndex > 0) {
@@ -863,6 +875,11 @@ function showScreen(screenKey) {
   if (screenKey === "cooking") {
     requestKitchenWakeLock();
   } else {
+    stopSpeech();
+    if (state.speakerEnabled) {
+      state.speakerEnabled = false;
+      updateSpeakerUI();
+    }
     releaseKitchenWakeLock();
     stopHandsFreeVoiceCommands();
   }
@@ -4171,6 +4188,12 @@ function renderCurrentStep(shouldAutoSpeak = false) {
     dom.nextStepSubText.textContent = `Up next: Step ${idx + 2} of ${total} (or say "Next")`;
   }
 
+  // Pre-fetch audio for current and next step in the background so Voice ON / Next Step plays instantaneously!
+  prefetchStepAudio(idx);
+  if (idx + 1 < total) {
+    prefetchStepAudio(idx + 1);
+  }
+
   if (shouldAutoSpeak && state.speakerEnabled) {
     speakCurrentStep(true);
   }
@@ -4259,95 +4282,136 @@ function createWavBlobFromBase64Pcm(base64Pcm, sampleRate = 24000) {
   return new Blob([wavBuffer], { type: "audio/wav" });
 }
 
-async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback) {
-  const ttsModels = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
-  let gotModelNotFound = false;
+const geminiTtsAudioCache = new Map();
+let activeTtsRequestToken = 0;
 
-  for (const modelId of ttsModels) {
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${encodeURIComponent(geminiKey)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: `Read this cooking step clearly and warmly: ${fullSpeechText}` }] }],
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName: "Kore",
+function buildStepSpeechText(stepIndex) {
+  const stepObj = state.recipe?.steps?.[stepIndex];
+  if (!stepObj) return "";
+  const plainInstruction = formatStepInstructionPlainText(stepObj.instruction);
+  const tipText = stepObj.tip ? ` Coach tip: ${stepObj.tip}` : "";
+  return `Step ${stepIndex + 1}. ${plainInstruction}.${tipText}`;
+}
+
+function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
+  if (geminiTtsAudioCache.has(fullSpeechText)) {
+    return geminiTtsAudioCache.get(fullSpeechText);
+  }
+
+  const promise = (async () => {
+    const ttsModels = ["gemini-2.5-flash-preview-tts"];
+    let gotModelNotFound = false;
+
+    for (const modelId of ttsModels) {
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: `Read concisely and naturally: ${fullSpeechText}` }] }],
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: {
+                  voiceConfig: {
+                    prebuiltVoiceConfig: {
+                      voiceName: "Kore",
+                    },
                   },
                 },
               },
-            },
-          }),
+            }),
+          }
+        );
+        if (!res.ok) {
+          if (res.status === 404 || res.status === 400 || res.status === 403) {
+            gotModelNotFound = true;
+          }
+          continue;
         }
-      );
-      if (!res.ok) {
-        if (res.status === 404 || res.status === 400 || res.status === 403) {
-          gotModelNotFound = true;
-        }
-        continue;
-      }
-      const data = await res.json();
-      const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-      if (!inlineData?.data) continue;
+        const data = await res.json();
+        const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+        if (!inlineData?.data) continue;
 
-      const mime = inlineData.mimeType || "";
-      let audioBlob = null;
-      if (mime.includes("pcm") || mime.includes("L16")) {
-        const rateMatch = mime.match(/rate=(\d+)/i);
-        const rate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
-        audioBlob = createWavBlobFromBase64Pcm(inlineData.data, rate);
-      } else {
+        const mime = inlineData.mimeType || "";
+        if (mime.includes("pcm") || mime.includes("L16")) {
+          const rateMatch = mime.match(/rate=(\d+)/i);
+          const rate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
+          return createWavBlobFromBase64Pcm(inlineData.data, rate);
+        }
         const bin = atob(inlineData.data);
         const arr = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-        audioBlob = new Blob([arr], { type: mime || "audio/wav" });
+        return new Blob([arr], { type: mime || "audio/wav" });
+      } catch {
+        // Fallback below
       }
+    }
 
-      const url = URL.createObjectURL(audioBlob);
-      if (!sharedAudioEl) sharedAudioEl = new Audio();
-      sharedAudioEl.volume = 1.0;
-      sharedAudioEl.src = url;
-      state.currentAudio = sharedAudioEl;
-      sharedAudioEl.onended = () => {
-        URL.revokeObjectURL(url);
-        if (onDoneCallback) onDoneCallback();
-      };
-      sharedAudioEl.onerror = () => {
-        URL.revokeObjectURL(url);
-        if (onDoneCallback) onDoneCallback();
-      };
+    if (gotModelNotFound) {
+      localStorage.setItem("chefcoach_gemini_tts_disabled", "true");
+    }
+    geminiTtsAudioCache.delete(fullSpeechText);
+    return null;
+  })();
+
+  geminiTtsAudioCache.set(fullSpeechText, promise);
+  return promise;
+}
+
+function prefetchStepAudio(stepIndex) {
+  const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
+  const geminiTtsDisabled = localStorage.getItem("chefcoach_gemini_tts_disabled") === "true";
+  if (!geminiKey || geminiTtsDisabled) return;
+  const text = buildStepSpeechText(stepIndex);
+  if (text && !geminiTtsAudioCache.has(text)) {
+    fetchGeminiTtsBlob(text, geminiKey);
+  }
+}
+
+async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback, requestToken) {
+  const audioBlob = await fetchGeminiTtsBlob(fullSpeechText, geminiKey);
+  if (!audioBlob || requestToken !== activeTtsRequestToken) return false;
+
+  const url = URL.createObjectURL(audioBlob);
+  if (!sharedAudioEl) sharedAudioEl = new Audio();
+  sharedAudioEl.volume = 1.0;
+  sharedAudioEl.src = url;
+  state.currentAudio = sharedAudioEl;
+  sharedAudioEl.onended = () => {
+    URL.revokeObjectURL(url);
+    if (onDoneCallback) onDoneCallback();
+  };
+  sharedAudioEl.onerror = () => {
+    URL.revokeObjectURL(url);
+    if (onDoneCallback) onDoneCallback();
+  };
+  try {
+    await sharedAudioEl.play();
+    return true;
+  } catch {
+    if (sharedAudioCtx) {
       try {
-        await sharedAudioEl.play();
+        const arrayBuf = await audioBlob.arrayBuffer();
+        const decoded = await sharedAudioCtx.decodeAudioData(arrayBuf);
+        if (requestToken !== activeTtsRequestToken) {
+          URL.revokeObjectURL(url);
+          return false;
+        }
+        const source = sharedAudioCtx.createBufferSource();
+        source.buffer = decoded;
+        source.connect(sharedAudioCtx.destination);
+        source.onended = () => {
+          URL.revokeObjectURL(url);
+          if (onDoneCallback) onDoneCallback();
+        };
+        source.start(0);
         return true;
       } catch {
-        // If HTMLAudioElement play() was blocked, decode and play via unlocked Web AudioContext!
-        if (sharedAudioCtx) {
-          const arrayBuf = await audioBlob.arrayBuffer();
-          const decoded = await sharedAudioCtx.decodeAudioData(arrayBuf);
-          const source = sharedAudioCtx.createBufferSource();
-          source.buffer = decoded;
-          source.connect(sharedAudioCtx.destination);
-          source.onended = () => {
-            URL.revokeObjectURL(url);
-            if (onDoneCallback) onDoneCallback();
-          };
-          source.start(0);
-          return true;
-        }
+        URL.revokeObjectURL(url);
       }
-    } catch {
-      // Try next model or fallback
     }
-  }
-
-  if (gotModelNotFound) {
-    // Remember that this Gemini key doesn't have TTS model access so future taps use instant synchronous voice
-    localStorage.setItem("chefcoach_gemini_tts_disabled", "true");
   }
   return false;
 }
@@ -4360,6 +4424,7 @@ function updateSpeakerUI() {
 }
 
 function stopSpeech() {
+  activeTtsRequestToken++;
   state.isCoachSpeaking = false;
   if (state.currentAudio) {
     try {
@@ -4449,6 +4514,7 @@ async function speakCurrentStep(force = false) {
     }
     state.currentAudio = null;
   }
+  const myRequestToken = ++activeTtsRequestToken;
   state.isCoachSpeaking = true;
 
   // Pause microphone recognition while coach is speaking so it never transcribes its own voice
@@ -4476,25 +4542,33 @@ async function speakCurrentStep(force = false) {
     }
   };
 
-  const stepObj = state.recipe.steps[state.currentStepIndex];
-  const stepNum = state.currentStepIndex + 1;
-  const plainInstruction = formatStepInstructionPlainText(stepObj.instruction);
-  const tipText = stepObj.tip ? ` Coach tip: ${stepObj.tip}` : "";
-  const fullSpeechText = `Step ${stepNum}. ${plainInstruction}.${tipText}`;
+  const fullSpeechText = buildStepSpeechText(state.currentStepIndex);
 
   const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
   const geminiTtsDisabled = localStorage.getItem("chefcoach_gemini_tts_disabled") === "true";
 
-  // 1. If Gemini API key is configured & supports TTS, try Gemini Native Audio TTS first
+  // 1. If Gemini API key is configured & supports TTS, play pre-cached/generated Gemini Native Audio
   if (geminiKey && !geminiTtsDisabled) {
-    if (dom.speakerLabel && state.speakerEnabled) {
-      dom.speakerLabel.textContent = "Speaking...";
+    if (dom.speakerLabel && state.speakerEnabled && !geminiTtsAudioCache.has(fullSpeechText)) {
+      dom.speakerLabel.textContent = "Loading...";
     }
-    const playedGemini = await tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, resumeMicAfterSpeech);
-    if (playedGemini) return;
+    const playedGemini = await tryPlayGeminiNativeTTS(
+      fullSpeechText,
+      geminiKey,
+      resumeMicAfterSpeech,
+      myRequestToken
+    );
+    if (myRequestToken !== activeTtsRequestToken) return;
+    if (playedGemini) {
+      if (dom.speakerLabel && state.speakerEnabled) {
+        dom.speakerLabel.textContent = "Voice ON";
+      }
+      return;
+    }
   }
 
-  // 2. Fallback to native OS SpeechSynthesis (now synchronously reached on tap!)
+  if (myRequestToken !== activeTtsRequestToken) return;
+  // 2. Fallback to native OS SpeechSynthesis
   speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
 }
 
