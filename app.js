@@ -742,6 +742,7 @@ async function verifyBothApiKeys(closeIfAllGood = false) {
       });
       if (res.ok) {
         oOk = true;
+        localStorage.removeItem("chefcoach_openai_tts_disabled");
         if (dom.openaiKeyStatusBadge) {
           dom.openaiKeyStatusBadge.textContent = "✅ Connected & Live";
           dom.openaiKeyStatusBadge.className = "api-status-pill ok";
@@ -750,6 +751,7 @@ async function verifyBothApiKeys(closeIfAllGood = false) {
       } else {
         const errData = await res.json().catch(() => ({}));
         const msg = errData?.error?.message || `HTTP ${res.status}`;
+        localStorage.setItem("chefcoach_openai_tts_disabled", "true");
         if (dom.openaiKeyStatusBadge) {
           dom.openaiKeyStatusBadge.textContent =
             res.status === 429 || /credits|quota|billing/i.test(msg)
@@ -3060,34 +3062,13 @@ function renderDishOptionsScreen(promptText) {
     appendBadgeTo(dom.optionsDietaryBadges, "🍽️ Maximum Taste");
   }
 
-  // Re-compute USDA/CoFID nutrition for each option & check for Dietary Conflicts
-  let anyConflict = null;
+  // Re-compute USDA/CoFID nutrition for each option
   state.dishOptions.forEach((opt) => {
-    const calc = computeRecipeNutritionAndConflicts(opt);
-    if (calc.hasConflict && !anyConflict) {
-      anyConflict = calc;
-    }
+    computeRecipeNutritionAndConflicts(opt);
   });
 
   if (dom.dietaryConflictBanner) {
-    if (anyConflict) {
-      dom.dietaryConflictBanner.hidden = false;
-      dom.dietaryConflictText.innerHTML = `${anyConflict.conflictWarnings[0]} <br><small>Below shows the true nutritional values if cooked as requested, or tap below to swap to a compliant alternative:</small>`;
-      if (anyConflict.suggestedSafeSwap && dom.conflictSwapBtn) {
-        dom.conflictSwapBtn.hidden = false;
-        dom.conflictSwapBtn.textContent = `✨ Swap to ${anyConflict.suggestedSafeSwap}`;
-        dom.conflictSwapBtn.onclick = () => {
-          dom.cravingInput.value = anyConflict.suggestedSafeSwap;
-          state.regenIndex = 0;
-          state.optionsHistory = [];
-          generateDishOptions();
-        };
-      } else if (dom.conflictSwapBtn) {
-        dom.conflictSwapBtn.hidden = true;
-      }
-    } else {
-      dom.dietaryConflictBanner.hidden = true;
-    }
+    dom.dietaryConflictBanner.hidden = true;
   }
 
   dom.dishOptionsContainer.innerHTML = "";
@@ -3125,7 +3106,7 @@ function renderDishOptionsScreen(promptText) {
           <span class="nutri-lbl">Sat. Fat</span>
         </div>
       </div>
-      <div class="dish-diet-Modification ${calc.hasConflict ? "conflict" : ""}">${opt.dietaryNote || "Tailored to your dietary goals"}</div>
+      <div class="dish-diet-Modification">${opt.dietaryNote || "Tailored to your dietary goals"}</div>
       <button type="button" class="select-dish-btn">View recipe</button>
     `;
 
@@ -3964,8 +3945,8 @@ function renderCurrentStep(shouldAutoSpeak = false) {
 }
 
 // ---------------- HIGH-QUALITY NATURAL VOICE ENGINE ----------------
-// Priority 1: OpenAI Neural TTS ("nova" / "shimmer" / "onyx") if OpenAI API key is set
-// Priority 2: Best Natural/Neural/Premium OS voice (Google Natural, Apple Ava/Samantha/Daniel Enhanced, Microsoft Aria/Sonia Natural)
+// Priority 1: OpenAI Neural TTS ("nova" / "shimmer" / "onyx") if OpenAI API key is set and has quota
+// Priority 2: Best Natural/Neural/Premium OS voice (iOS Safari SpeechSynthesis unlocked synchronously on user gesture)
 function updateSpeakerUI() {
   dom.speakerToggleBtn.classList.toggle("active", state.speakerEnabled);
   dom.speakerToggleBtn.setAttribute("aria-pressed", String(state.speakerEnabled));
@@ -3976,11 +3957,48 @@ function updateSpeakerUI() {
 function stopSpeech() {
   state.isCoachSpeaking = false;
   if (state.currentAudio) {
-    state.currentAudio.pause();
+    try {
+      state.currentAudio.pause();
+    } catch {
+      // Ignore
+    }
     state.currentAudio = null;
   }
   if ("speechSynthesis" in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      // Ignore
+    }
+  }
+}
+
+function speakWithBrowserTTS(fullSpeechText, onDoneCallback) {
+  if (!("speechSynthesis" in window)) {
+    if (onDoneCallback) onDoneCallback();
+    return;
+  }
+  try {
     window.speechSynthesis.cancel();
+    window.speechSynthesis.resume();
+    const utterance = new SpeechSynthesisUtterance(fullSpeechText);
+    utterance.lang = "en-US";
+    const bestVoice = pickBestNaturalBrowserVoice();
+    if (bestVoice) {
+      utterance.voice = bestVoice;
+      if (bestVoice.lang) utterance.lang = bestVoice.lang;
+    }
+    utterance.rate = 0.98;
+    utterance.pitch = 1.0;
+    utterance.onend = () => {
+      if (onDoneCallback) onDoneCallback();
+    };
+    utterance.onerror = () => {
+      if (onDoneCallback) onDoneCallback();
+    };
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    if (onDoneCallback) onDoneCallback();
   }
 }
 
@@ -3991,7 +4009,7 @@ async function speakCurrentStep(force = false) {
   stopSpeech();
   state.isCoachSpeaking = true;
 
-  // Pause microphone recognition while coach is speaking so it never transcribes its own voice!
+  // Pause microphone recognition while coach is speaking so it never transcribes its own voice
   if (state.voiceCommandsListening && state.voiceRecognition) {
     try {
       state.voiceRecognition.stop();
@@ -4019,53 +4037,62 @@ async function speakCurrentStep(force = false) {
   const tipText = stepObj.tip ? ` Coach tip: ${stepObj.tip}` : "";
   const fullSpeechText = `Step ${stepNum}. ${plainInstruction}.${tipText}`;
 
-  const openaiKey = localStorage.getItem("chefcoach_openai_key");
+  const openaiKey = (localStorage.getItem("chefcoach_openai_key") || "").trim();
+  const openaiNoCredits = localStorage.getItem("chefcoach_openai_tts_disabled") === "true";
 
-  // 1. Try OpenAI Neural TTS ("tts-1", voice: nova/shimmer/onyx) for studio-grade human voice
-  if (openaiKey) {
-    try {
-      const res = await fetch("https://api.openai.com/v1/audio/speech", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${openaiKey}`,
-        },
-        body: JSON.stringify({
-          model: "tts-1",
-          voice: state.voiceStyle || "nova",
-          input: fullSpeechText,
-        }),
-      });
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        state.currentAudio = audio;
-        audio.onended = resumeMicAfterSpeech;
-        audio.onerror = resumeMicAfterSpeech;
-        audio.play();
-        return;
-      }
-    } catch {
-      // Fallback to Ranked Natural OS Voice below
-    }
+  // If no OpenAI key or OpenAI key has no credits, speak IMMEDIATELY & SYNCHRONOUSLY within the user tap gesture
+  // so iOS Safari and Android Chrome never block audio playback!
+  if (!openaiKey || openaiNoCredits) {
+    speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
+    return;
   }
 
-  // 2. Select the highest-ranked Natural / Neural voice available in the browser
+  // Unlock iOS WebSpeech synchronously during user tap in case OpenAI fetch falls back
   if ("speechSynthesis" in window) {
-    const utterance = new SpeechSynthesisUtterance(fullSpeechText);
-    const bestVoice = pickBestNaturalBrowserVoice();
-    if (bestVoice) {
-      utterance.voice = bestVoice;
+    try {
+      window.speechSynthesis.resume();
+    } catch {
+      // Ignore
     }
-    utterance.rate = 0.98;
-    utterance.pitch = 1.02;
-    utterance.onend = resumeMicAfterSpeech;
-    utterance.onerror = resumeMicAfterSpeech;
-    window.speechSynthesis.speak(utterance);
-  } else {
-    resumeMicAfterSpeech();
   }
+
+  // Try OpenAI Neural TTS ("tts-1", voice: nova/shimmer/onyx)
+  try {
+    const res = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${openaiKey}`,
+      },
+      body: JSON.stringify({
+        model: "tts-1",
+        voice: state.voiceStyle || "nova",
+        input: fullSpeechText,
+      }),
+    });
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      state.currentAudio = audio;
+      audio.onended = resumeMicAfterSpeech;
+      audio.onerror = () => speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(() => {
+          speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
+        });
+      }
+      return;
+    } else if (res.status === 429 || res.status === 401 || res.status === 403) {
+      // Remember that OpenAI TTS has no quota/credits so future taps speak instantaneously on iOS Safari!
+      localStorage.setItem("chefcoach_openai_tts_disabled", "true");
+    }
+  } catch {
+    // Fallback to browser voice below
+  }
+
+  speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
 }
 
 function pickBestNaturalBrowserVoice() {
@@ -4336,7 +4363,10 @@ function openAllStepsModal() {
     item.className = `step-overview-item ${idx === state.currentStepIndex ? "current" : ""}`;
     item.innerHTML = `
       <div class="step-overview-num">${idx + 1}</div>
-      <div class="step-overview-text">${formatStepInstructionHTML(step.instruction, true)}</div>
+      <div class="step-overview-text">
+        <span class="step-overview-phase">${step.phase || `Step ${idx + 1}`}</span>
+        ${formatStepInstructionHTML(step.instruction, true)}
+      </div>
     `;
     item.addEventListener("click", () => {
       state.currentStepIndex = idx;

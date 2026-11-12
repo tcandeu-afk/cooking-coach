@@ -1901,16 +1901,15 @@ h2. dish-card-title {
   color: var(--text-muted);
 }
 
-/* Replace Options Modal */
+/* Replace Options & All Steps Modals */
 .replace-options-list,
 .all-steps-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
-.replace-option-btn,
-.step-overview-item {
+.replace-option-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1920,8 +1919,122 @@ h2. dish-card-title {
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
   background: var(--bg-page);
+  color: var(--text-main);
   font-family: inherit;
   cursor: pointer;
+}
+
+.step-overview-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  align-items: start;
+  gap: 12px;
+  text-align: left;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-page);
+  color: var(--text-main);
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.step-overview-item:hover {
+  border-color: #CBD2C9;
+}
+
+.step-overview-item.current {
+  background: #FFFFFF;
+  border-color: var(--green-primary);
+  box-shadow: 0 2px 8px rgba(36, 107, 69, 0.08);
+}
+
+.step-overview-num {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-subtle);
+  color: var(--green-primary);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.step-overview-item.current .step-overview-num {
+  background: var(--green-primary);
+  color: #FFFFFF;
+}
+
+.step-overview-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-main);
+  font-size: 14px;
+  line-height: 1.48;
+}
+
+.step-overview-phase {
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.step-overview-item.current .step-overview-phase {
+  color: var(--green-primary);
+}
+
+.step-overview-sublist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.step-overview-sublist li {
+  position: relative;
+  padding-left: 14px;
+  color: var(--text-main);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.step-overview-sublist li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--green-primary);
+  font-weight: 700;
+}
+
+.step-overview-sublist strong,
+.detail-step-body strong {
+  color: var(--green-primary);
+  font-weight: 600;
+}
+
+.detail-step-item {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 13px 14px;
+  background: var(--bg-page);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
 }
 
 .replace-opt-main {
