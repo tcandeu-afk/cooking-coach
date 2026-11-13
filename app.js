@@ -468,7 +468,7 @@ function init() {
   }
   if (dom.proceedFromChatToCookBtn) {
     dom.proceedFromChatToCookBtn.addEventListener("click", () => {
-      unlockMobileAudioMediaChannel();
+      unlockMobileAudioMediaChannel(true);
       finalizeUncheckedAdaptations();
       state.currentStepIndex = 0;
       showScreen("cooking");
@@ -3776,7 +3776,7 @@ function showAdaptationNotification(message, showPivotBtn = false) {
 
 // ---------------- "MAKE IT NOW" & KITCHEN PARTNER CHAT HUDDLE ----------------
 function handleMakeItNow() {
-  unlockMobileAudioMediaChannel();
+  unlockMobileAudioMediaChannel(true);
   const r = state.recipe;
   if (!r) return;
 
@@ -4206,11 +4206,51 @@ let sharedAudioEl = null;
 let sharedAudioCtx = null;
 let activeWebAudioSource = null;
 
-function unlockMobileAudioMediaChannel() {
+function createSilentWavBlobUrl() {
+  const sampleRate = 24000;
+  const numSamples = 480; // 20ms valid PCM silence
+  const dataBytes = numSamples * 2;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+  const writeStr = (off, s) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, dataBytes, true);
+  return URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
+}
+
+function unlockMobileAudioMediaChannel(unlockHtmlAudioNow = false) {
   try {
     if (!sharedAudioEl) {
       sharedAudioEl = new Audio();
       sharedAudioEl.playsInline = true;
+    }
+    // Unlock HTMLAudioElement permanently on navigation tap ("Make It Now") with a 100% valid 20ms silent WAV
+    // so it is already unlocked and idle before the user ever taps "Voice ON"
+    if (unlockHtmlAudioNow && !sharedAudioEl.__unlocked) {
+      const silentUrl = createSilentWavBlobUrl();
+      sharedAudioEl.src = silentUrl;
+      const p = sharedAudioEl.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          sharedAudioEl.__unlocked = true;
+          URL.revokeObjectURL(silentUrl);
+        }).catch(() => {
+          URL.revokeObjectURL(silentUrl);
+        });
+      }
     }
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (AudioCtx && !sharedAudioCtx) {
@@ -4276,8 +4316,7 @@ function buildStepSpeechText(stepIndex) {
   const stepObj = state.recipe?.steps?.[stepIndex];
   if (!stepObj) return "";
   const plainInstruction = formatStepInstructionPlainText(stepObj.instruction);
-  const tipText = stepObj.tip ? ` Coach tip: ${stepObj.tip}` : "";
-  return `Step ${stepIndex + 1}. ${plainInstruction}.${tipText}`;
+  return `Step ${stepIndex + 1}. ${plainInstruction}`;
 }
 
 let sessionGeminiTtsUnsupported = false;
@@ -4289,6 +4328,7 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
 
   const promise = (async () => {
     const ttsModels = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
+    let allNotFound = true;
 
     for (const modelId of ttsModels) {
       try {
@@ -4298,7 +4338,7 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              contents: [{ parts: [{ text: `Read this cooking step clearly and warmly: ${fullSpeechText}` }] }],
+              contents: [{ parts: [{ text: `Speak clearly and naturally: ${fullSpeechText}` }] }],
               generationConfig: {
                 responseModalities: ["AUDIO"],
                 speechConfig: {
@@ -4313,13 +4353,15 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
           }
         );
         if (!res.ok) {
-          if (res.status === 404) {
-            sessionGeminiTtsUnsupported = true;
+          if (res.status !== 404) {
+            allNotFound = false;
           }
           continue;
         }
+        allNotFound = false;
         const data = await res.json();
-        const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+        const parts = data?.candidates?.[0]?.content?.parts || [];
+        const inlineData = parts.find((p) => p?.inlineData?.data)?.inlineData;
         if (!inlineData?.data) continue;
 
         const mime = inlineData.mimeType || "";
@@ -4333,10 +4375,13 @@ function fetchGeminiTtsBlob(fullSpeechText, geminiKey) {
         for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
         return new Blob([arr], { type: mime || "audio/wav" });
       } catch {
-        // Fallback below
+        allNotFound = false;
       }
     }
 
+    if (allNotFound) {
+      sessionGeminiTtsUnsupported = true;
+    }
     geminiTtsAudioCache.delete(fullSpeechText);
     return null;
   })();
@@ -4381,7 +4426,7 @@ async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback,
     await sharedAudioEl.play();
     return true;
   } catch (err) {
-    // If interrupted by the silent unlock frame still loading, retry once after 60ms
+    // If interrupted by a prior load, retry once after 60ms
     if (err && err.name === "AbortError") {
       await new Promise((r) => setTimeout(r, 60));
       try {
@@ -4393,11 +4438,13 @@ async function tryPlayGeminiNativeTTS(fullSpeechText, geminiKey, onDoneCallback,
     }
     if (sharedAudioCtx) {
       try {
-        if (sharedAudioCtx.state === "suspended") {
-          await sharedAudioCtx.resume();
-        }
         const arrayBuf = await audioBlob.arrayBuffer();
-        const decoded = await sharedAudioCtx.decodeAudioData(arrayBuf);
+        const decoded = await new Promise((resolve, reject) => {
+          const p = sharedAudioCtx.decodeAudioData(arrayBuf, resolve, reject);
+          if (p && typeof p.then === "function") {
+            p.then(resolve).catch(reject);
+          }
+        });
         if (requestToken !== activeTtsRequestToken) {
           URL.revokeObjectURL(url);
           return false;
@@ -4516,8 +4563,11 @@ async function speakCurrentStep(force = false) {
   if (!state.speakerEnabled && !force) return;
   if (!state.recipe) return;
 
-  // Unlock iOS HTML5 Audio channel synchronously during the user's tap gesture
-  unlockMobileAudioMediaChannel();
+  const fullSpeechText = buildStepSpeechText(state.currentStepIndex);
+
+  // Unlock iOS AudioContext synchronously during the user's tap gesture
+  // (and unlock HTMLAudioElement too if audio isn't already cached)
+  unlockMobileAudioMediaChannel(!geminiTtsAudioCache.has(fullSpeechText));
 
   if (state.currentAudio) {
     try {
@@ -4555,8 +4605,6 @@ async function speakCurrentStep(force = false) {
     }
   };
 
-  const fullSpeechText = buildStepSpeechText(state.currentStepIndex);
-
   const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
 
   // 1. If Gemini API key is configured & supported, play pre-cached/generated Gemini Native Audio
@@ -4580,6 +4628,9 @@ async function speakCurrentStep(force = false) {
   }
 
   if (myRequestToken !== activeTtsRequestToken) return;
+  if (dom.speakerLabel) {
+    dom.speakerLabel.textContent = state.speakerEnabled ? "Voice ON" : "Voice Off";
+  }
   // 2. Fallback to native OS SpeechSynthesis
   speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
 }
