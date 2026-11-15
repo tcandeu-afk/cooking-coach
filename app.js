@@ -4205,7 +4205,7 @@ function applyLocalCopilotFallback(userMessage, recipe, calc) {
   const isSweetDish = /banana|oat|loaf|cake|pancake|muffin|berry|apple|sweet|cinnamon|vanilla/i.test(
     `${recipe.title} ${(recipe.ingredients || []).map((i) => i.name).join(" ")}`
   );
-  if (/flavou?r|taste|bland|spice|aroma|zest/i.test(lower)) {
+  if (/flavou?r|taste|bland|spice|aroma|zest|elaborate|elevate|fancy|gourmet/i.test(lower)) {
     if (isSweetDish) {
       const id1 = `ing-flav-${Date.now()}`;
       const id2 = `ing-flav2-${Date.now() + 1}`;
