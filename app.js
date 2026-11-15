@@ -4201,12 +4201,91 @@ function applyLocalCopilotFallback(userMessage, recipe, calc) {
     };
   }
 
+  // Flavour / spice / crunch / moisture / sweetness enhancement fallback
+  const isSweetDish = /banana|oat|loaf|cake|pancake|muffin|berry|apple|sweet|cinnamon|vanilla/i.test(
+    `${recipe.title} ${(recipe.ingredients || []).map((i) => i.name).join(" ")}`
+  );
+  if (/flavou?r|taste|bland|spice|aroma|zest/i.test(lower)) {
+    if (isSweetDish) {
+      const id1 = `ing-flav-${Date.now()}`;
+      const id2 = `ing-flav2-${Date.now() + 1}`;
+      updated.ingredients.push(
+        {
+          id: id1,
+          name: "Ceylon cinnamon & freshly grated nutmeg",
+          qtyMetric: "4 g",
+          checked: true,
+          replacedFrom: "Co-Pilot Flavour Boost",
+          nutritionPer100g: { kcal: 247, proteinG: 4, fatG: 1.2, carbsG: 81, fiberG: 53, cholMg: 0, satFatG: 0.3, addedSugarG: 0 },
+          alternatives: [],
+        },
+        {
+          id: id2,
+          name: "Pure vanilla extract & flaky sea salt",
+          qtyMetric: "6 ml",
+          checked: true,
+          replacedFrom: "Co-Pilot Flavour Boost",
+          nutritionPer100g: { kcal: 120, proteinG: 0, fatG: 0, carbsG: 12, fiberG: 0, cholMg: 0, satFatG: 0, addedSugarG: 0 },
+          alternatives: [],
+        }
+      );
+      if (updated.steps?.length) {
+        updated.steps[0].instruction += ` Stir in [${id1}] and [${id2}] so aromatics bloom evenly through the batter.`;
+      }
+      return {
+        explanation:
+          "Added 4 g Ceylon cinnamon & nutmeg plus 6 ml vanilla extract & a pinch of flaky sea salt. Warm spices amplify perceived sweetness without adding sugar, while a touch of salt sharpens banana and oat flavour.",
+        batchWarning: null,
+        didMutateRecipe: true,
+        updatedRecipe: updated,
+      };
+    }
+    const idSav = `ing-flav-${Date.now()}`;
+    updated.ingredients.push({
+      id: idSav,
+      name: "Smoked paprika, garlic powder & lemon zest",
+      qtyMetric: "8 g",
+      checked: true,
+      replacedFrom: "Co-Pilot Flavour Boost",
+      nutritionPer100g: { kcal: 280, proteinG: 14, fatG: 8, carbsG: 55, fiberG: 20, cholMg: 0, satFatG: 1.5, addedSugarG: 0 },
+      alternatives: [],
+    });
+    if (updated.steps?.length) {
+      updated.steps[0].instruction += ` Season thoroughly with [${idSav}] before cooking.`;
+    }
+    return {
+      explanation:
+        "Added 8 g smoked paprika, garlic powder & fresh lemon zest. Acid (lemon zest) brightens savoury notes while smoked paprika adds umami depth without extra fat.",
+      batchWarning: null,
+      didMutateRecipe: true,
+      updatedRecipe: updated,
+    };
+  }
+
   return {
-    explanation: `Add a Gemini or OpenAI API key in Preferences for live food-science Co-Pilot mutations, or use the ingredient swap/add tools below to edit "${recipe.title}".`,
+    explanation: `Add a Gemini or OpenAI API key in Preferences for live food-science Co-Pilot mutations, or try asking for "more flavour", "scale to 6", or "macro check".`,
     batchWarning: null,
     didMutateRecipe: false,
     updatedRecipe: null,
   };
+}
+
+function sendCopilotMessageWithText(text) {
+  if (!state.recipe) return;
+  if (dom.copilotBody) {
+    dom.copilotBody.hidden = false;
+  }
+  if (dom.copilotToggleBtn) {
+    dom.copilotToggleBtn.setAttribute("aria-expanded", "true");
+    dom.copilotToggleBtn.textContent = "Collapse";
+  }
+  if (dom.copilotInput) {
+    dom.copilotInput.value = text;
+  }
+  if (dom.copilotPanel) {
+    dom.copilotPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  return sendCopilotMessage();
 }
 
 async function sendCopilotMessage() {
@@ -4364,13 +4443,57 @@ function toggleCheckAllIngredients() {
   renderIngredientRows();
 }
 
+function inferSmartMetricQtyForPantryItem(rawName) {
+  const lower = rawName.toLowerCase();
+  if (/\b(cinnamon|nutmeg|cardamom|ginger|paprika|cumin|turmeric|oregano|thyme|chili|chilli|salt|pepper|spice)\b/.test(lower)) {
+    return "3 g";
+  }
+  if (/\b(vanilla|extract|vinegar|lemon juice|lime juice|soy sauce|maple|honey)\b/.test(lower)) {
+    return "5 ml";
+  }
+  if (/\b(chia|flax|walnut|almond|pecan|peanut|cashew|seed|cacao|choc|chocolate)\b/.test(lower)) {
+    return `${Math.round(25 * (state.servings / 2))} g`;
+  }
+  if (/\b(egg|eggs)\b/.test(lower)) {
+    return "100 g";
+  }
+  return `${Math.round(90 * (state.servings / 2))} g`;
+}
+
 function handleAddExtraIngredient() {
   const val = dom.addExtraInput.value.trim();
   if (!val || !state.recipe) return;
 
-  const hasQty = /^\d+/.test(val);
-  const qtyMetric = hasQty ? val.split(" ").slice(0, 2).join(" ") : `${Math.round(120 * (state.servings / 2))} g`;
-  const cleanName = hasQty ? val.replace(/^\d+\s*[a-zA-Z]*\s*/, "") || val : val;
+  // Detect conversational questions or culinary requests (e.g. "can i have more flavour?", "make it spicier")
+  const looksLikeQuestionOrRequest =
+    /\?$/.test(val) ||
+    /^(can i|how|what|why|should i|could i|is it|make it|more |less |add more|boost )/i.test(val) ||
+    /\b(flavou?r|taste|spicy|sweeter|crunch|too dry|moisture|protein|macro|calor)\b/i.test(val);
+
+  if (looksLikeQuestionOrRequest) {
+    dom.addExtraInput.value = "";
+    sendCopilotMessageWithText(val);
+    return;
+  }
+
+  const qtyMatch = val.match(/^(\d+(?:\.\d+)?)\s*(g|kg|ml|l)?\s+(.+)$/i);
+  let qtyMetric = "";
+  let cleanName = val;
+  if (qtyMatch) {
+    const num = parseFloat(qtyMatch[1]);
+    const unit = qtyMatch[2];
+    cleanName = qtyMatch[3].trim();
+    if (unit) {
+      qtyMetric = `${num} ${unit.toLowerCase()}`;
+    } else if (/egg/i.test(cleanName)) {
+      qtyMetric = `${Math.round(num * 50)} g (${num} ${cleanName})`;
+    } else {
+      qtyMetric = `${Math.round(num * 100)} g`;
+    }
+  } else {
+    qtyMetric = inferSmartMetricQtyForPantryItem(val);
+  }
+
   const newId = `ing-extra-${Date.now()}`;
 
   state.recipe.ingredients.push({
@@ -4384,13 +4507,13 @@ function handleAddExtraIngredient() {
 
   // Automatically weave the newly added ingredient into the cooking steps!
   const targetStepIdx = Math.max(0, state.recipe.steps.length - 2);
-  state.recipe.steps[targetStepIdx].instruction += ` Fold in [${newId}] and cook for 2 minutes so its flavors infuse into the dish.`;
+  state.recipe.steps[targetStepIdx].instruction += ` Fold in [${newId}] so its flavour and texture integrate evenly.`;
 
   dom.addExtraInput.value = "";
   showAdaptationNotification(
     `🧠 AI Coach integrated "${cleanName}" (${qtyMetric}) into Step ${targetStepIdx + 1} of your preparation!`
   );
-  renderIngredientsScreen();
+  renderIngredientsScreen(true);
 }
 
 // ---------------- SMART SWAP ENGINE (RE-ENGINEERS STEPS OR SUGGESTS PIVOT) ----------------
