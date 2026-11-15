@@ -148,6 +148,7 @@ const dom = {
   checkAllBtn: document.getElementById("checkAllBtn"),
   addExtraInput: document.getElementById("addExtraInput"),
   addExtraBtn: document.getElementById("addExtraBtn"),
+  inlineTalkReply: document.getElementById("inlineTalkReply"),
   shoppingListKeepBtn: document.getElementById("shoppingListKeepBtn"),
   shoppingCountSubtext: document.getElementById("shoppingCountSubtext"),
   makeItNowBtn: document.getElementById("makeItNowBtn"),
@@ -4279,11 +4280,12 @@ function sendCopilotMessageWithText(text) {
     dom.copilotToggleBtn.setAttribute("aria-expanded", "true");
     dom.copilotToggleBtn.textContent = "Collapse";
   }
+  if (dom.inlineTalkReply) {
+    dom.inlineTalkReply.hidden = false;
+    dom.inlineTalkReply.textContent = "🧑‍🍳 Chef is thinking...";
+  }
   if (dom.copilotInput) {
     dom.copilotInput.value = text;
-  }
-  if (dom.copilotPanel) {
-    dom.copilotPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
   return sendCopilotMessage();
 }
@@ -4321,6 +4323,11 @@ async function sendCopilotMessage() {
     state.copilotMessages.push({ role: "coach", text: result.explanation });
     if (result.batchWarning) {
       state.copilotMessages.push({ role: "warning", text: `⚠️ ${result.batchWarning}` });
+    }
+    if (dom.inlineTalkReply && !dom.inlineTalkReply.hidden) {
+      dom.inlineTalkReply.textContent = result.batchWarning
+        ? `🧑‍🍳 ${result.explanation}\n⚠️ ${result.batchWarning}`
+        : `🧑‍🍳 ${result.explanation}`;
     }
     renderCopilotMessages();
   } finally {
