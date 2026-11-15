@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <title>ChefCoach — AI Cooking Coach</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20261115c" />
 </head>
 <body>
   <div class="app-shell">
@@ -56,7 +56,7 @@
               <textarea
                 id="cravingInput"
                 rows="2"
-                placeholder="e.g., Something with 4 bananas, or chicken and broccoli..."
+                placeholder="Try: '6 bananas, oats, air fryer' or 'high protein air fryer dinner'..."
               ></textarea>
               <div class="input-toolbar">
                 <label for="pantryPhotoInput" class="camera-btn" title="Snap or upload photo of pantry/fridge" aria-label="Upload pantry or fridge photo">
@@ -66,9 +66,12 @@
                   </svg>
                 </label>
                 <input type="file" id="pantryPhotoInput" accept="image/*" capture="environment" hidden />
-                <button type="button" class="go-input-btn" id="clearInputBtn" title="Generate recipe suggestions">Go →</button>
+                <button type="button" class="go-input-btn" id="clearInputBtn" title="Parse intent &amp; generate recipe suggestions">Go →</button>
               </div>
             </div>
+
+            <!-- Parsed Omni-Intent Pills -->
+            <div id="parsedIntentChips" class="parsed-intent-chips" hidden></div>
 
             <!-- Pantry Photo Preview & Vision AI Detection Banner -->
             <div id="photoPreviewCard" class="photo-preview-card" hidden>
@@ -176,6 +179,9 @@
             </div>
           </div>
 
+          <!-- Parsed Omni-Intent Pills (removable/toggleable) -->
+          <div class="parsed-intent-chips" id="optionsIntentChips" hidden></div>
+
           <!-- Active Dietary Badges -->
           <div class="badge-row" id="optionsDietaryBadges"></div>
 
@@ -221,9 +227,14 @@
             <button type="button" class="back-pill-btn" id="backToOptionsBtn">
               ← Dishes
             </button>
-            <button type="button" class="save-recipe-pill" id="saveRecipeFromIngBtn">
-              🤍 Save Recipe
-            </button>
+            <div class="recipe-save-actions">
+              <button type="button" class="save-recipe-pill iteration-pill" id="saveNewIterationBtn" title="Save modified recipe as a new iteration in your history">
+                ✨ Save New Iteration
+              </button>
+              <button type="button" class="save-recipe-pill" id="saveRecipeFromIngBtn">
+                🤍 Save Recipe
+              </button>
+            </div>
           </div>
 
           <div class="badge-row" id="recipeBadges"></div>
@@ -244,6 +255,49 @@
             <div class="meta-item">
               <span class="meta-lbl">Servings</span>
               <span class="meta-val" id="detailServings">2</span>
+            </div>
+          </div>
+
+          <!-- Live Macro Summary Bar (Whole Batch + Per Serving/Slice) -->
+          <div class="live-macro-bar" id="liveMacroSummaryBar">
+            <div class="live-macro-header">
+              <span class="live-macro-title">Live Macros (Metric Scale)</span>
+              <span class="live-macro-batch-pill" id="liveMacroBatchSummary">Batch: — kcal</span>
+            </div>
+            <div class="live-macro-grid" id="liveMacroGrid">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Stateful Culinary Co-Pilot Drawer/Panel -->
+        <div class="copilot-panel" id="copilotPanel">
+          <div class="copilot-header">
+            <div class="copilot-title-row">
+              <span class="copilot-badge">🧑‍🍳 Culinary Co-Pilot</span>
+              <span class="copilot-sub">Stateful food-science editor</span>
+            </div>
+            <button type="button" class="copilot-toggle-btn" id="copilotToggleBtn" aria-expanded="true">Collapse</button>
+          </div>
+          <div class="copilot-body" id="copilotBody">
+            <div class="copilot-quick-chips" id="copilotQuickChips">
+              <button type="button" class="quick-tweak-pill" data-copilot="Scale this to 6 bananas and split trays if needed">Scale to 6 bananas</button>
+              <button type="button" class="quick-tweak-pill" data-copilot="Use oat flour instead of oat bran and rebalance liquid">Swap to oat flour</button>
+              <button type="button" class="quick-tweak-pill" data-copilot="Adapt for Dual-Drawer Air Fryer with Silicone Loaf Inserts at °C">Air fryer trays</button>
+              <button type="button" class="quick-tweak-pill" data-copilot="How fattening is this? Break down calories, fat and fibre per slice">Macro check</button>
+            </div>
+            <div class="copilot-stream" id="copilotChatStream">
+              <div class="copilot-msg coach">
+                Ask me to swap ingredients, scale surplus produce, adjust for air-fryer tray capacity, or analyse macros. I'll explain the food science and update the recipe weights, steps &amp; nutrition live.
+              </div>
+            </div>
+            <div class="copilot-composer">
+              <input
+                type="text"
+                id="copilotInput"
+                placeholder="e.g., 'I'm out of apple', 'use 400g oat flour', 'how fattening is this?'..."
+              />
+              <button type="button" class="send-chat-btn" id="copilotSendBtn">Apply</button>
             </div>
           </div>
         </div>
@@ -270,13 +324,18 @@
             <!-- Dynamically populated ingredients -->
           </div>
 
-          <!-- Add extra ingredient you want to use up -->
+          <!-- Interactive "Let's talk about it" Chef Box (questions, flavour tweaks, or pantry additions) -->
           <div class="add-extra-box">
-            <label for="addExtraInput" class="add-extra-label">Add an ingredient from your kitchen</label>
+            <label for="addExtraInput" class="add-extra-label">Let's talk about it</label>
             <div class="add-extra-row">
-              <input type="text" id="addExtraInput" placeholder="e.g., 150 g mushrooms or 2 eggs" />
-              <button type="button" class="add-extra-btn" id="addExtraBtn">Add</button>
+              <input
+                type="text"
+                id="addExtraInput"
+                placeholder="Ask for tweaks, more flavour, swaps, or add an ingredient (e.g. '2 eggs')..."
+              />
+              <button type="button" class="add-extra-btn" id="addExtraBtn">Ask Chef</button>
             </div>
+            <div id="inlineTalkReply" class="copilot-msg coach" style="margin-top:8px;" hidden></div>
           </div>
         </div>
 
@@ -610,6 +669,48 @@
           </div>
         </div>
 
+        <!-- Persistent Kitchen & Appliances Profile -->
+        <div class="burger-section">
+          <span class="burger-label">Saved Kitchen Appliances</span>
+          <span class="burger-sub" style="display:block; margin-bottom:8px;">Auto-injected into every search &amp; Co-Pilot edit (°C &amp; batch splitting)</span>
+          <div class="kitchen-profile-chips" id="applianceProfileChips">
+            <button type="button" class="appliance-chip" data-appliance="Dual-Drawer Air Fryer">Dual-Drawer Air Fryer</button>
+            <button type="button" class="appliance-chip" data-appliance="Silicone Loaf Inserts">Silicone Loaf Inserts</button>
+            <button type="button" class="appliance-chip" data-appliance="Stand Mixer">Stand Mixer</button>
+            <button type="button" class="appliance-chip" data-appliance="Convection Oven">Convection Oven</button>
+            <button type="button" class="appliance-chip" data-appliance="Stovetop Skillet">Stovetop Skillet</button>
+            <button type="button" class="appliance-chip" data-appliance="Blender / Food Processor">Blender</button>
+          </div>
+          <div class="custom-appliance-row">
+            <input type="text" id="customApplianceInput" placeholder="Add appliance (e.g., Waffle Maker)..." />
+            <button type="button" class="secondary-outline-btn" id="addCustomApplianceBtn">Add</button>
+          </div>
+        </div>
+
+        <!-- Culinary & Dietary Defaults -->
+        <div class="burger-section">
+          <span class="burger-label">Culinary &amp; Dietary Defaults</span>
+          <div class="kitchen-profile-chips" id="culinaryDefaultsChips" style="margin-top:8px;">
+            <button type="button" class="appliance-chip active" data-default="metricOnly">Metric Scale (g, ml, °C)</button>
+            <button type="button" class="appliance-chip" data-default="eggless">Eggless</button>
+            <button type="button" class="appliance-chip" data-default="lowSugar">No Refined Sugar</button>
+            <button type="button" class="appliance-chip" data-default="highFibre">High Fibre</button>
+            <button type="button" class="appliance-chip" data-default="cholesterolConscious">Cholesterol-Conscious</button>
+            <button type="button" class="appliance-chip" data-default="dairyFree">Dairy-Free</button>
+          </div>
+        </div>
+
+        <!-- Recipe Memory / History -->
+        <div class="burger-section">
+          <div class="burger-toggle-row">
+            <div>
+              <span class="burger-label">Recipe Memory</span>
+              <span class="burger-sub" id="recipeHistoryCountSub">0 past recipes remembered for smart discovery</span>
+            </div>
+            <button type="button" class="secondary-outline-btn" id="clearRecipeHistoryBtn">Clear</button>
+          </div>
+        </div>
+
         <!-- Interactive Keep Screen Awake Toggle -->
         <div class="burger-section">
           <div class="burger-toggle-row">
@@ -660,6 +761,6 @@
 
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=20261115c"></script>
 </body>
 </html>
