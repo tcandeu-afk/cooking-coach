@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <title>ChefCoach — AI Cooking Coach</title>
-  <link rel="stylesheet" href="styles.css?v=20261115c" />
+  <link rel="stylesheet" href="styles.css?v=20261115e" />
 </head>
 <body>
   <div class="app-shell">
@@ -270,34 +270,34 @@
           </div>
         </div>
 
-        <!-- Stateful Culinary Co-Pilot Drawer/Panel -->
+        <!-- Basil (Stateful Culinary Co-Pilot) -->
         <div class="copilot-panel" id="copilotPanel">
           <div class="copilot-header">
             <div class="copilot-title-row">
-              <span class="copilot-badge">🧑‍🍳 Culinary Co-Pilot</span>
-              <span class="copilot-sub">Stateful food-science editor</span>
+              <span class="copilot-badge">🧑‍🍳 Basil</span>
+              <span class="copilot-sub">Your clever kitchen sidekick.</span>
             </div>
             <button type="button" class="copilot-toggle-btn" id="copilotToggleBtn" aria-expanded="true">Collapse</button>
           </div>
           <div class="copilot-body" id="copilotBody">
             <div class="copilot-quick-chips" id="copilotQuickChips">
-              <button type="button" class="quick-tweak-pill" data-copilot="Scale this to 6 bananas and split trays if needed">Scale to 6 bananas</button>
-              <button type="button" class="quick-tweak-pill" data-copilot="Use oat flour instead of oat bran and rebalance liquid">Swap to oat flour</button>
-              <button type="button" class="quick-tweak-pill" data-copilot="Adapt for Dual-Drawer Air Fryer with Silicone Loaf Inserts at °C">Air fryer trays</button>
-              <button type="button" class="quick-tweak-pill" data-copilot="How fattening is this? Break down calories, fat and fibre per slice">Macro check</button>
+              <button type="button" class="quick-tweak-pill" data-copilot="Give me a 6-banana batch">Give me a 6-banana batch</button>
+              <button type="button" class="quick-tweak-pill" data-copilot="Let's try oat flour">Let's try oat flour</button>
+              <button type="button" class="quick-tweak-pill" data-copilot="Make it air-fryer friendly">Make it air-fryer friendly</button>
+              <button type="button" class="quick-tweak-pill" data-copilot="What's the nutrition breakdown?">What's the nutrition breakdown?</button>
             </div>
             <div class="copilot-stream" id="copilotChatStream">
               <div class="copilot-msg coach">
-                Ask me to swap ingredients, scale surplus produce, adjust for air-fryer tray capacity, or analyse macros. I'll explain the food science and update the recipe weights, steps &amp; nutrition live.
+                Apron on! I've got your recipe ready. Want to swap ingredients, resize the batch, give it an air-fryer makeover or see how nutritious it really is? Just tell me what you're thinking!
               </div>
             </div>
             <div class="copilot-composer">
               <input
                 type="text"
                 id="copilotInput"
-                placeholder="e.g., 'I'm out of apple', 'use 400g oat flour', 'how fattening is this?'..."
+                placeholder="Got a missing ingredient? Want a healthier version? Tell me what's on your mind..."
               />
-              <button type="button" class="send-chat-btn" id="copilotSendBtn">Apply</button>
+              <button type="button" class="send-chat-btn" id="copilotSendBtn">Let's cook!</button>
             </div>
           </div>
         </div>
@@ -761,6 +761,6 @@
 
   </div>
 
-  <script src="app.js?v=20261115c"></script>
+  <script src="app.js?v=20261115e"></script>
 </body>
 </html>

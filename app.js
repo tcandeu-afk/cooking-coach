@@ -2188,76 +2188,8 @@ Return ONLY valid JSON:
 
 function renderParsedIntentChips(targetContainer) {
   if (!targetContainer) return;
-  const intent = state.parsedIntent;
-  if (!intent) {
-    targetContainer.hidden = true;
-    targetContainer.innerHTML = "";
-    return;
-  }
-
-  const chips = [];
-  if (intent.dishFormat) {
-    chips.push({ type: "format", key: intent.dishFormat, label: `Format: ${intent.dishFormat}` });
-  }
-  if (intent.ingredients?.length) {
-    intent.ingredients.forEach((ing, idx) => {
-      const text = ing.quantity ? `${ing.quantity} ${ing.name}` : ing.name;
-      chips.push({ type: "ingredient", key: String(idx), label: `Ingredient: ${text}` });
-    });
-  }
-  if (intent.appliances?.length) {
-    intent.appliances.forEach((appName) => {
-      chips.push({ type: "appliance", key: appName, label: `Appliance: ${appName}` });
-    });
-  }
-  if (intent.dietaryGoals?.length) {
-    intent.dietaryGoals.forEach((goal) => {
-      chips.push({ type: "diet", key: goal, label: `Diet: ${goal}` });
-    });
-  }
-  if (intent.surplusScaleNote) {
-    chips.push({ type: "surplus", key: "surplus", label: intent.surplusScaleNote });
-  }
-
-  if (!chips.length) {
-    targetContainer.hidden = true;
-    targetContainer.innerHTML = "";
-    return;
-  }
-
-  targetContainer.hidden = false;
-  targetContainer.innerHTML = chips
-    .map(
-      (c) => `
-      <span class="intent-chip ${c.type}">
-        <span>${c.label}</span>
-        <button type="button" class="intent-chip-remove" data-chip-type="${c.type}" data-chip-key="${c.key}" title="Remove constraint">✕</button>
-      </span>
-    `
-    )
-    .join("");
-
-  targetContainer.querySelectorAll(".intent-chip-remove").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const type = btn.dataset.chipType;
-      const key = btn.dataset.chipKey;
-      if (!state.parsedIntent) return;
-      if (type === "format") state.parsedIntent.dishFormat = null;
-      else if (type === "ingredient") state.parsedIntent.ingredients.splice(Number(key), 1);
-      else if (type === "appliance") {
-        state.parsedIntent.appliances = state.parsedIntent.appliances.filter((a) => a !== key);
-      } else if (type === "diet") {
-        state.parsedIntent.dietaryGoals = state.parsedIntent.dietaryGoals.filter((g) => g !== key);
-      } else if (type === "surplus") {
-        state.parsedIntent.surplusScaleNote = null;
-      }
-      renderParsedIntentChips(dom.parsedIntentChips);
-      renderParsedIntentChips(dom.optionsIntentChips);
-      if (dom.screens.options.classList.contains("active")) {
-        generateDishOptions(true);
-      }
-    });
-  });
+  targetContainer.hidden = true;
+  targetContainer.innerHTML = "";
 }
 
 // ---------------- GENERATE A HANDFUL OF DISH OPTIONS (WITH REGENERATE) ----------------
@@ -3895,17 +3827,44 @@ function appendBadgeTo(container, text) {
   container.appendChild(b);
 }
 
+function renderCopilotQuickChips(recipe) {
+  if (!dom.copilotQuickChips || !recipe) return;
+  const text = `${recipe.title || ""} ${(recipe.ingredients || []).map((i) => i.name).join(" ")}`.toLowerCase();
+  const hasBanana = /banana/.test(text);
+  const hasOats = /oat/.test(text);
+
+  const chips = [
+    hasBanana
+      ? { label: "Give me a 6-banana batch", prompt: "Give me a 6-banana batch and split trays if needed" }
+      : { label: "Double this batch", prompt: "Double this batch and adjust cooking times" },
+    hasOats
+      ? { label: "Let's try oat flour", prompt: "Let's try oat flour instead and rebalance the liquid" }
+      : { label: "Lighten it up", prompt: "Give this a lighter, healthier makeover without losing flavour" },
+    { label: "Make it air-fryer friendly", prompt: "Make it air-fryer friendly with °C temps and tray splitting if needed" },
+    { label: "What's the nutrition breakdown?", prompt: "What's the nutrition breakdown per serving and for the whole batch?" },
+  ];
+
+  dom.copilotQuickChips.innerHTML = chips
+    .map((c) => `<button type="button" class="quick-tweak-pill" data-copilot="${c.prompt}">${c.label}</button>`)
+    .join("");
+}
+
 function selectDishOption(opt) {
   state.recipe = JSON.parse(JSON.stringify(opt));
   state.pivotSuggestion = null;
   state.copilotMessages = [
     {
       role: "coach",
-      text: `Co-Pilot ready for "${state.recipe.title}". Ask me to swap flours/fruits, scale quantities, adapt for your appliances, or break down calories & macros.`,
+      text: `Apron on! I've got your ${state.recipe.title} ready. Want to swap ingredients, resize the batch, give it an air-fryer makeover or see how nutritious it really is? Just tell me what you're thinking!`,
     },
   ];
   dom.aiAdaptationBanner.hidden = true;
+  if (dom.inlineTalkReply) {
+    dom.inlineTalkReply.hidden = true;
+    dom.inlineTalkReply.textContent = "";
+  }
   recordRecipeToHistory(state.recipe, "selected");
+  renderCopilotQuickChips(state.recipe);
   renderCopilotMessages();
   renderIngredientsScreen();
   showScreen("ingredients");
@@ -4075,7 +4034,13 @@ function renderCopilotMessages() {
 
 function buildCopilotSystemPrompt(userMessage, recipe, calc) {
   const profileContext = buildKitchenProfilePromptContext();
-  return `You are ChefCoach Culinary Co-Pilot — a stateful, food-science-backed recipe editor.
+  return `You are Basil — your clever kitchen sidekick. You sound like an experienced, cheeky, laid-back sous-chef mate who genuinely loves cooking and food science.
+Style rules:
+- Use short, natural conversational sentences (e.g., "Good call.", "No drama.", "Easy, I've got the kitchen maths covered.").
+- Never sound like a corporate chatbot, formal recipe book, or customer-service bot.
+- Avoid excessive food puns, forced jokes, repeated greetings, overusing emojis, or pretending to have personally tasted food.
+- Never sacrifice food-science accuracy: explain hydration, substitution ratios, leavening, texture, °C temps, and macro/calorie deltas clearly.
+
 ${profileContext}
 
 CURRENT ACTIVE RECIPE JSON:
@@ -4169,11 +4134,11 @@ function applyLocalCopilotFallback(userMessage, recipe, calc) {
   const updated = JSON.parse(JSON.stringify(recipe));
 
   // Analytical macro query fallback
-  if (/how\s*fattening|macro|calor|nutrition|kcal/i.test(lower)) {
+  if (/how\s*fattening|macro|calor|nutrition|kcal|breakdown/i.test(lower)) {
     const p = calc.portion;
     const b = calc.batch;
     return {
-      explanation: `Per serving (${b.servings} servings): ${p.kcalNum} kcal, ${p.proteinNum}g protein, ${p.fatNum}g fat (${p.satFatNum}g sat. fat), ${p.carbsNum}g carbs, ${p.fiberNum}g fibre. Whole batch (${b.totalGrams}g): ${b.kcalNum} kcal, ${b.fatNum}g fat, ${b.fiberNum}g fibre.`,
+      explanation: `Time to get nerdy about those macros! Per serving (${b.servings} servings): ${p.kcalNum} kcal, ${p.proteinNum}g protein, ${p.fatNum}g fat (${p.satFatNum}g sat. fat), ${p.carbsNum}g carbs, ${p.fiberNum}g fibre. Whole batch (${b.totalGrams}g): ${b.kcalNum} kcal, ${b.fatNum}g fat, ${b.fiberNum}g fibre. (Note: nutrition values are estimates based on standard ingredient profiles.)`,
       batchWarning: null,
       didMutateRecipe: false,
       updatedRecipe: null,
@@ -4193,9 +4158,9 @@ function applyLocalCopilotFallback(userMessage, recipe, calc) {
     const totalWeight = updated.ingredients.reduce((s, i) => s + parseGramsFromQtyMetric(i.qtyMetric), 0);
     const needsSplit = totalWeight > 750;
     return {
-      explanation: `Scaled all ingredient weights by ${factor.toFixed(1)}x (${totalWeight}g total batch) while preserving hydration and leavening-to-flour ratios.`,
+      explanation: `Easy, I've got the kitchen maths covered. Scaled all ingredient weights by ${factor.toFixed(1)}x (${totalWeight}g total batch) while keeping hydration and leavening-to-flour ratios balanced.`,
       batchWarning: needsSplit
-        ? `Batch weight (${totalWeight}g) exceeds a single silicone air-fryer insert — split evenly across 2 trays at 160°C.`
+        ? `Quick heads-up: ${totalWeight}g is a bit much for one silicone air-fryer insert — split it evenly across 2 trays at 160°C so the centre bakes through.`
         : null,
       didMutateRecipe: true,
       updatedRecipe: updated,
@@ -4264,7 +4229,7 @@ function applyLocalCopilotFallback(userMessage, recipe, calc) {
   }
 
   return {
-    explanation: `Add a Gemini or OpenAI API key in Preferences for live food-science Co-Pilot mutations, or try asking for "more flavour", "scale to 6", or "macro check".`,
+    explanation: `Hmm, I need a Gemini or OpenAI API key in Preferences to run full live recipe mutations. Without a key, try asking me for "more flavour", "scale to 6", or "what's the nutrition breakdown?".`,
     batchWarning: null,
     didMutateRecipe: false,
     updatedRecipe: null,
@@ -4282,7 +4247,7 @@ function sendCopilotMessageWithText(text) {
   }
   if (dom.inlineTalkReply) {
     dom.inlineTalkReply.hidden = false;
-    dom.inlineTalkReply.textContent = "🧑‍🍳 Chef is thinking...";
+    dom.inlineTalkReply.textContent = "🧑‍🍳 Checking the food science...";
   }
   if (dom.copilotInput) {
     dom.copilotInput.value = text;
@@ -4301,7 +4266,7 @@ async function sendCopilotMessage() {
 
   if (dom.copilotSendBtn) {
     dom.copilotSendBtn.disabled = true;
-    dom.copilotSendBtn.textContent = "...";
+    dom.copilotSendBtn.textContent = "Thinking...";
   }
 
   try {
@@ -4330,10 +4295,16 @@ async function sendCopilotMessage() {
         : `🧑‍🍳 ${result.explanation}`;
     }
     renderCopilotMessages();
+  } catch {
+    state.copilotMessages.push({
+      role: "coach",
+      text: "Hmm, something didn't quite work. Let's give that another go.",
+    });
+    renderCopilotMessages();
   } finally {
     if (dom.copilotSendBtn) {
       dom.copilotSendBtn.disabled = false;
-      dom.copilotSendBtn.textContent = "Apply";
+      dom.copilotSendBtn.textContent = "Let's cook!";
     }
   }
 }
