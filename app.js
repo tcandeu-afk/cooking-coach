@@ -30,6 +30,24 @@ const state = {
   recipe: null,
   currentRating: 5,
   savedRecipes: JSON.parse(localStorage.getItem("chefcoach_saved_recipes") || "[]"),
+  kitchenProfile: JSON.parse(
+    localStorage.getItem("chefcoach_kitchen_profile") ||
+      JSON.stringify({
+        appliances: ["Dual-Drawer Air Fryer", "Silicone Loaf Inserts"],
+        customAppliances: [],
+        defaults: {
+          metricOnly: true,
+          eggless: false,
+          lowSugar: false,
+          highFibre: false,
+          cholesterolConscious: false,
+          dairyFree: false,
+        },
+      })
+  ),
+  recipeHistory: JSON.parse(localStorage.getItem("chefcoach_recipe_history") || "[]"),
+  parsedIntent: null,
+  copilotMessages: [],
   pivotSuggestion: null,
   currentStepIndex: 0,
   activeReplaceIndex: null,
@@ -69,6 +87,7 @@ const dom = {
   // Setup & Camera
   cravingInput: document.getElementById("cravingInput"),
   clearInputBtn: document.getElementById("clearInputBtn"),
+  parsedIntentChips: document.getElementById("parsedIntentChips"),
   pantryPhotoInput: document.getElementById("pantryPhotoInput"),
   photoPreviewCard: document.getElementById("photoPreviewCard"),
   photoPreviewImg: document.getElementById("photoPreviewImg"),
@@ -84,6 +103,7 @@ const dom = {
 
   // Screen 2: Dish Options, Conflict Warning, Tweak Box & Nutrition Basis
   optionsSubtitle: document.getElementById("optionsSubtitle"),
+  optionsIntentChips: document.getElementById("optionsIntentChips"),
   optionsDietaryBadges: document.getElementById("optionsDietaryBadges"),
   dietaryConflictBanner: document.getElementById("dietaryConflictBanner"),
   dietaryConflictText: document.getElementById("dietaryConflictText"),
@@ -100,11 +120,22 @@ const dom = {
   // Screen 3: Ingredients, Smart Swaps & Keep
   recipeBadges: document.getElementById("recipeBadges"),
   saveRecipeFromIngBtn: document.getElementById("saveRecipeFromIngBtn"),
+  saveNewIterationBtn: document.getElementById("saveNewIterationBtn"),
   recipeTitle: document.getElementById("recipeTitle"),
   recipeSummary: document.getElementById("recipeSummary"),
   detailPrepTime: document.getElementById("detailPrepTime"),
   detailDifficulty: document.getElementById("detailDifficulty"),
   detailServings: document.getElementById("detailServings"),
+  liveMacroSummaryBar: document.getElementById("liveMacroSummaryBar"),
+  liveMacroBatchSummary: document.getElementById("liveMacroBatchSummary"),
+  liveMacroGrid: document.getElementById("liveMacroGrid"),
+  copilotPanel: document.getElementById("copilotPanel"),
+  copilotToggleBtn: document.getElementById("copilotToggleBtn"),
+  copilotBody: document.getElementById("copilotBody"),
+  copilotQuickChips: document.getElementById("copilotQuickChips"),
+  copilotChatStream: document.getElementById("copilotChatStream"),
+  copilotInput: document.getElementById("copilotInput"),
+  copilotSendBtn: document.getElementById("copilotSendBtn"),
   detailStepsCountLabel: document.getElementById("detailStepsCountLabel"),
   detailStepsPreviewList: document.getElementById("detailStepsPreviewList"),
   nutriBasisTitle: document.getElementById("nutriBasisTitle"),
@@ -195,6 +226,12 @@ const dom = {
   apiTestSummaryBox: document.getElementById("apiTestSummaryBox"),
   voiceStyleSelect: document.getElementById("voiceStyleSelect"),
   saveApiKeysBtn: document.getElementById("saveApiKeysBtn"),
+  applianceProfileChips: document.getElementById("applianceProfileChips"),
+  customApplianceInput: document.getElementById("customApplianceInput"),
+  addCustomApplianceBtn: document.getElementById("addCustomApplianceBtn"),
+  culinaryDefaultsChips: document.getElementById("culinaryDefaultsChips"),
+  recipeHistoryCountSub: document.getElementById("recipeHistoryCountSub"),
+  clearRecipeHistoryBtn: document.getElementById("clearRecipeHistoryBtn"),
 };
 
 // ---------------- INITIALIZATION ----------------
@@ -204,6 +241,13 @@ function init() {
   dom.openaiKeyInput.value = localStorage.getItem("chefcoach_openai_key") || "";
   dom.voiceStyleSelect.value = state.voiceStyle;
   updateSavedCountBadges();
+  initKitchenProfileUI();
+  initCopilotUI();
+  initDynamicSearchPlaceholders();
+
+  if (dom.saveNewIterationBtn) {
+    dom.saveNewIterationBtn.addEventListener("click", saveAsNewIteration);
+  }
 
   if ("speechSynthesis" in window) {
     window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
@@ -1438,10 +1482,12 @@ function parseGramsFromQtyMetric(qtyMetric) {
 }
 
 function computeRecipeNutritionAndConflicts(r) {
-  const servings = state.servings || 2;
+  const servings = Number(r.servings) || state.servings || 2;
   let totalGrams = 0;
   let totalKcal = 0;
   let totalProt = 0;
+  let totalFat = 0;
+  let totalCarbs = 0;
   let totalFiber = 0;
   let totalChol = 0;
   let totalSatFat = 0;
@@ -1456,13 +1502,24 @@ function computeRecipeNutritionAndConflicts(r) {
     const prof = lookupIngredientProfile(ing.name, ing.nutritionPer100g);
     const factor = g / 100;
 
+    // Derive fatG and carbsG cleanly when a local USDA row omits them
+    const estFatPer100g =
+      typeof prof.fatG === "number"
+        ? prof.fatG
+        : Math.max(prof.satFatG || 0, Math.min(100, (prof.satFatG || 0) * 2.4));
+    const remKcal = Math.max(0, (prof.kcal || 0) - (prof.proteinG || 0) * 4 - estFatPer100g * 9);
+    const estCarbsPer100g =
+      typeof prof.carbsG === "number" ? prof.carbsG : Math.max(prof.fiberG || 0, +(remKcal / 4).toFixed(1));
+
     totalGrams += g;
-    totalKcal += prof.kcal * factor;
-    totalProt += prof.proteinG * factor;
-    totalFiber += prof.fiberG * factor;
-    totalChol += prof.cholMg * factor;
-    totalSatFat += prof.satFatG * factor;
-    totalAddedSugar += prof.addedSugarG * factor;
+    totalKcal += (prof.kcal || 0) * factor;
+    totalProt += (prof.proteinG || 0) * factor;
+    totalFat += estFatPer100g * factor;
+    totalCarbs += estCarbsPer100g * factor;
+    totalFiber += (prof.fiberG || 0) * factor;
+    totalChol += (prof.cholMg || 0) * factor;
+    totalSatFat += (prof.satFatG || 0) * factor;
+    totalAddedSugar += (prof.addedSugarG || 0) * factor;
 
     const shortIng = ing.name.split("(")[0].trim();
 
@@ -1553,8 +1610,11 @@ function computeRecipeNutritionAndConflicts(r) {
   const perPortion = {
     basisLabel: `Per Portion (~${portionGrams} g)`,
     kcal: `${Math.round(totalKcal / servings)} kcal`,
+    kcalNum: Math.round(totalKcal / servings),
     protein: `${protPerPortion} g`,
     proteinNum: protPerPortion,
+    fatNum: +(totalFat / servings).toFixed(1),
+    carbsNum: Math.round(totalCarbs / servings),
     fiber: `${fiberPerPortion} g`,
     fiberNum: fiberPerPortion,
     cholMgNum: cholPerPortion,
@@ -1562,11 +1622,25 @@ function computeRecipeNutritionAndConflicts(r) {
     addedSugarNum: sugarPerPortion,
   };
 
+  const batch = {
+    totalGrams: Math.round(totalGrams),
+    kcalNum: Math.round(totalKcal),
+    proteinNum: Math.round(totalProt),
+    fatNum: +totalFat.toFixed(1),
+    carbsNum: Math.round(totalCarbs),
+    fiberNum: Math.round(totalFiber),
+    satFatNum: +totalSatFat.toFixed(1),
+    servings,
+  };
+
   const per100g = {
     basisLabel: `Per 100 g`,
     kcal: `${Math.round((totalKcal / safeTotalGrams) * 100)} kcal`,
+    kcalNum: Math.round((totalKcal / safeTotalGrams) * 100),
     protein: `${+((totalProt / safeTotalGrams) * 100).toFixed(1)} g`,
     proteinNum: +((totalProt / safeTotalGrams) * 100).toFixed(1),
+    fatNum: +((totalFat / safeTotalGrams) * 100).toFixed(1),
+    carbsNum: +((totalCarbs / safeTotalGrams) * 100).toFixed(1),
     fiber: `${+((totalFiber / safeTotalGrams) * 100).toFixed(1)} g`,
     fiberNum: +((totalFiber / safeTotalGrams) * 100).toFixed(1),
     cholMgNum: Math.round((totalChol / safeTotalGrams) * 100),
@@ -1591,6 +1665,7 @@ function computeRecipeNutritionAndConflicts(r) {
   per100g.addedSugar = `${per100g.addedSugarNum} g`;
 
   r.computedNutrition = {
+    batch,
     portion: perPortion,
     per100g,
     hasConflict: conflictWarnings.length > 0,
@@ -1800,8 +1875,388 @@ function applyDietaryEngineeringToRecipe(rawRecipe, scale) {
   return r;
 }
 
+// ---------------- PERSISTENT KITCHEN PROFILE, RECIPE MEMORY & OMNI-INTENT PARSER ----------------
+function persistKitchenProfile() {
+  localStorage.setItem("chefcoach_kitchen_profile", JSON.stringify(state.kitchenProfile));
+}
+
+function persistRecipeHistory() {
+  localStorage.setItem("chefcoach_recipe_history", JSON.stringify(state.recipeHistory));
+  updateRecipeHistoryUI();
+}
+
+function updateRecipeHistoryUI() {
+  if (dom.recipeHistoryCountSub) {
+    const count = state.recipeHistory.length;
+    dom.recipeHistoryCountSub.textContent = `${count} past recipe${count === 1 ? "" : "s"} remembered for smart discovery`;
+  }
+}
+
+function recordRecipeToHistory(recipe, source = "viewed") {
+  if (!recipe || !recipe.title) return;
+  const calc = computeRecipeNutritionAndConflicts(recipe);
+  const entry = {
+    title: recipe.title,
+    styleTag: recipe.styleTag || "Custom",
+    keyIngredients: (recipe.ingredients || []).slice(0, 6).map((i) => i.name.split("(")[0].trim()),
+    appliancesUsed: [...(state.kitchenProfile.appliances || [])],
+    perServingKcal: calc.portion.kcalNum,
+    perServingProteinG: calc.portion.proteinNum,
+    perServingFiberG: calc.portion.fiberNum,
+    rating: recipe.rating || null,
+    source,
+    timestamp: Date.now(),
+  };
+  const existingIdx = state.recipeHistory.findIndex((h) => h.title.toLowerCase() === entry.title.toLowerCase());
+  if (existingIdx !== -1) {
+    state.recipeHistory.splice(existingIdx, 1);
+  }
+  state.recipeHistory.unshift(entry);
+  if (state.recipeHistory.length > 25) {
+    state.recipeHistory = state.recipeHistory.slice(0, 25);
+  }
+  persistRecipeHistory();
+}
+
+function buildKitchenProfilePromptContext() {
+  const kp = state.kitchenProfile || { appliances: [], defaults: {} };
+  const allAppliances = [...(kp.appliances || []), ...(kp.customAppliances || [])];
+  const d = kp.defaults || {};
+  const activeDefaults = [];
+  if (d.metricOnly !== false) activeDefaults.push("Metric units ONLY (g, ml, °C; digital scale precision, NO cups/spoons/°F)");
+  if (d.eggless) activeDefaults.push("Eggless (use chia/flax gel, mashed fruit, or aquafaba instead of eggs)");
+  if (d.lowSugar) activeDefaults.push("No refined sugar / low added sugar");
+  if (d.highFibre) activeDefaults.push("High dietary fibre");
+  if (d.cholesterolConscious) activeDefaults.push("Cholesterol-conscious (low saturated fat, heart-healthy oils)");
+  if (d.dairyFree) activeDefaults.push("Dairy-free");
+
+  const savedSummaries = (state.savedRecipes || []).slice(0, 6).map((s) => ({
+    title: s.title,
+    styleTag: s.styleTag,
+    rating: s.rating || 5,
+    keyIngredients: (s.ingredients || []).slice(0, 5).map((i) => i.name),
+  }));
+  const recentHistory = (state.recipeHistory || []).slice(0, 8);
+
+  return `USER PERSISTENT KITCHEN & DIETARY PROFILE:
+- Owned Appliances: ${allAppliances.length ? allAppliances.join(", ") : "Standard Oven & Stovetop"}
+- Culinary Defaults: ${activeDefaults.join("; ")}
+- Saved Favourites (${savedSummaries.length}): ${savedSummaries.length ? JSON.stringify(savedSummaries) : "None yet"}
+- Recent Cooking History (${recentHistory.length}): ${recentHistory.length ? JSON.stringify(recentHistory) : "None yet"}`;
+}
+
+function initKitchenProfileUI() {
+  const renderProfileChips = () => {
+    const kp = state.kitchenProfile;
+    if (dom.applianceProfileChips) {
+      // Ensure custom appliances are rendered as chips too
+      (kp.customAppliances || []).forEach((appName) => {
+        const exists = Array.from(dom.applianceProfileChips.querySelectorAll(".appliance-chip")).some(
+          (b) => b.dataset.appliance === appName
+        );
+        if (!exists) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "appliance-chip";
+          btn.dataset.appliance = appName;
+          btn.textContent = appName;
+          dom.applianceProfileChips.appendChild(btn);
+        }
+      });
+
+      dom.applianceProfileChips.querySelectorAll(".appliance-chip").forEach((btn) => {
+        const name = btn.dataset.appliance;
+        const active = (kp.appliances || []).includes(name);
+        btn.classList.toggle("active", active);
+      });
+    }
+
+    if (dom.culinaryDefaultsChips) {
+      dom.culinaryDefaultsChips.querySelectorAll(".appliance-chip").forEach((btn) => {
+        const key = btn.dataset.default;
+        btn.classList.toggle("active", Boolean(kp.defaults && kp.defaults[key]));
+      });
+    }
+    updateRecipeHistoryUI();
+  };
+
+  if (dom.applianceProfileChips) {
+    dom.applianceProfileChips.addEventListener("click", (e) => {
+      const btn = e.target.closest(".appliance-chip");
+      if (!btn) return;
+      const name = btn.dataset.appliance;
+      const list = state.kitchenProfile.appliances || [];
+      const idx = list.indexOf(name);
+      if (idx === -1) list.push(name);
+      else list.splice(idx, 1);
+      state.kitchenProfile.appliances = list;
+      persistKitchenProfile();
+      renderProfileChips();
+    });
+  }
+
+  if (dom.addCustomApplianceBtn && dom.customApplianceInput) {
+    const addAppliance = () => {
+      const val = dom.customApplianceInput.value.trim();
+      if (!val) return;
+      if (!state.kitchenProfile.customAppliances) state.kitchenProfile.customAppliances = [];
+      if (!state.kitchenProfile.appliances) state.kitchenProfile.appliances = [];
+      if (!state.kitchenProfile.customAppliances.includes(val)) {
+        state.kitchenProfile.customAppliances.push(val);
+      }
+      if (!state.kitchenProfile.appliances.includes(val)) {
+        state.kitchenProfile.appliances.push(val);
+      }
+      dom.customApplianceInput.value = "";
+      persistKitchenProfile();
+      renderProfileChips();
+    };
+    dom.addCustomApplianceBtn.addEventListener("click", addAppliance);
+    dom.customApplianceInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addAppliance();
+      }
+    });
+  }
+
+  if (dom.culinaryDefaultsChips) {
+    dom.culinaryDefaultsChips.addEventListener("click", (e) => {
+      const btn = e.target.closest(".appliance-chip");
+      if (!btn) return;
+      const key = btn.dataset.default;
+      if (!state.kitchenProfile.defaults) state.kitchenProfile.defaults = {};
+      state.kitchenProfile.defaults[key] = !state.kitchenProfile.defaults[key];
+      persistKitchenProfile();
+      renderProfileChips();
+    });
+  }
+
+  if (dom.clearRecipeHistoryBtn) {
+    dom.clearRecipeHistoryBtn.addEventListener("click", () => {
+      state.recipeHistory = [];
+      persistRecipeHistory();
+    });
+  }
+
+  renderProfileChips();
+}
+
+function initDynamicSearchPlaceholders() {
+  if (!dom.cravingInput) return;
+  const examples = [
+    "Try: '6 bananas, oats, air fryer' or 'high protein air fryer dinner'...",
+    "Try: 'creamy corn cake no dairy' or '400g oat flour, chia, silicone trays'...",
+    "Try: 'quick eggless banana loaf' or 'salmon, chickpeas, 20 mins'...",
+  ];
+  let idx = 0;
+  setInterval(() => {
+    if (document.activeElement === dom.cravingInput || dom.cravingInput.value.trim()) return;
+    idx = (idx + 1) % examples.length;
+    dom.cravingInput.placeholder = examples[idx];
+  }, 4500);
+}
+
+function getMergedDietaryGoalsFromQueryAndProfile(queryDiets = []) {
+  const goals = new Set(queryDiets);
+  const d = state.kitchenProfile?.defaults || {};
+  if (state.dietary["cholesterol-safe"] || d.cholesterolConscious) goals.add("Cholesterol-Conscious");
+  if (state.dietary["protein-rich"]) goals.add("High Protein");
+  if (state.dietary["fiber-rich"] || d.highFibre) goals.add("High Fibre");
+  if (state.dietary["no-added-sugar"] || d.lowSugar) goals.add("No Refined Sugar");
+  if (d.eggless) goals.add("Eggless");
+  if (d.dairyFree) goals.add("Dairy-Free");
+  if (d.metricOnly !== false) goals.add("Metric (g/ml/°C)");
+  if (state.otherDietaryText?.trim()) goals.add(state.otherDietaryText.trim());
+  return Array.from(goals);
+}
+
+function parseOmniIntentLocal(queryText) {
+  const q = String(queryText || "").trim();
+  const lower = q.toLowerCase();
+
+  const formatMatch = lower.match(/\b(loaf|bread|cake|muffins?|pancakes?|fritters?|curry|stir-?fry|salad|soup|bowl|pasta|bake|bars?|porridge|dinner|breakfast|snack|omelette)\b/);
+  const dishFormat = formatMatch ? formatMatch[1] : null;
+
+  const appliances = [];
+  if (/air\s*fryer/i.test(lower)) appliances.push("Air Fryer");
+  if (/silicone\s*(tray|trays|loaf|insert|inserts|mold|mould)/i.test(lower)) appliances.push("Silicone Loaf Inserts");
+  if (/stovetop|skillet|pan/i.test(lower)) appliances.push("Stovetop");
+  if (/no\s*oven/i.test(lower)) appliances.push("No Oven");
+  if (/oven/i.test(lower) && !/no\s*oven/i.test(lower)) appliances.push("Oven");
+  if (/blender|food\s*processor/i.test(lower)) appliances.push("Blender");
+
+  // Merge user's default appliances if none explicitly stated
+  if (appliances.length === 0 && state.kitchenProfile?.appliances?.length) {
+    appliances.push(...state.kitchenProfile.appliances.slice(0, 2));
+  }
+
+  const queryDiets = [];
+  if (/high\s*protein|protein[-\s]*rich/i.test(lower)) queryDiets.push("High Protein");
+  if (/no\s*dairy|dairy[-\s]*free/i.test(lower)) queryDiets.push("Dairy-Free");
+  if (/eggless|no\s*egg/i.test(lower)) queryDiets.push("Eggless");
+  if (/no\s*(added\s*)?sugar|sugar[-\s]*free|low\s*sugar/i.test(lower)) queryDiets.push("No Refined Sugar");
+  if (/high\s*fib(er|re)/i.test(lower)) queryDiets.push("High Fibre");
+  if (/gluten[-\s]*free/i.test(lower)) queryDiets.push("Gluten-Free");
+
+  // Extract quantity + ingredient pairs (e.g. "6 bananas", "400g oat flour", "oats")
+  const cleanedForIngs = q
+    .replace(/\b(using|with|in|for|no|high|quick|easy|healthy|air\s*fryer|silicone\s*trays?|stovetop|no\s*oven|dairy|sugar|protein|dinner|breakfast|snack|lunch)\b/gi, " ")
+    .replace(/\s+/g, " ");
+  const rawTokens = cleanedForIngs.split(/,|&|\band\b/i).map((s) => s.trim()).filter(Boolean);
+  const ingredients = [];
+  rawTokens.forEach((tok) => {
+    if (tok.length < 2) return;
+    if (dishFormat && tok.toLowerCase() === dishFormat.toLowerCase()) return;
+    const qtyMatch = tok.match(/^(\d+(?:\.\d+)?\s*(?:g|kg|ml|l)?)\s+(.+)$/i);
+    if (qtyMatch) {
+      ingredients.push({ quantity: qtyMatch[1].trim(), name: qtyMatch[2].trim() });
+    } else {
+      ingredients.push({ quantity: "", name: tok });
+    }
+  });
+
+  // Detect surplus perishable quantity (e.g. >= 4 bananas, >= 500g fruit/veg)
+  let surplusScaleNote = null;
+  ingredients.forEach((ing) => {
+    const n = parseFloat(ing.quantity);
+    if (!isNaN(n) && n >= 4 && !/g|ml/i.test(ing.quantity)) {
+      surplusScaleNote = `Surplus scale: ${ing.quantity} ${ing.name} (batch/multi-tray)`;
+    }
+  });
+
+  return {
+    rawQuery: q,
+    dishFormat,
+    ingredients,
+    appliances: Array.from(new Set(appliances)),
+    dietaryGoals: getMergedDietaryGoalsFromQueryAndProfile(queryDiets),
+    surplusScaleNote,
+  };
+}
+
+async function parseOmniIntent(queryText) {
+  const localParsed = parseOmniIntentLocal(queryText);
+  const geminiKey = localStorage.getItem("chefcoach_gemini_key");
+  if (!geminiKey) return localParsed;
+
+  try {
+    const parserPrompt = `Extract structured culinary intent from this search query: "${queryText}".
+Return ONLY valid JSON:
+{
+  "dishFormat": string or null (e.g., "loaf", "cake", "curry", "stir-fry", "breakfast", or null if user only listed ingredients),
+  "ingredients": [{ "name": string, "quantity": string }],
+  "appliances": [string],
+  "dietaryGoals": [string],
+  "surplusScaleNote": string or null (if user entered a large surplus of a perishable item like 6 bananas or 1kg apples, note batch scaling)
+}`;
+    const res = await callGeminiGenerateContent(geminiKey, {
+      contents: [{ parts: [{ text: parserPrompt }] }],
+      generationConfig: { responseMimeType: "application/json" },
+    });
+    if (!res.ok) return localParsed;
+    const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed) return localParsed;
+
+    const mergedAppliances = Array.from(
+      new Set([
+        ...(Array.isArray(parsed.appliances) ? parsed.appliances : []),
+        ...(localParsed.appliances.length && (!parsed.appliances || !parsed.appliances.length)
+          ? localParsed.appliances
+          : []),
+      ])
+    );
+
+    return {
+      rawQuery: queryText,
+      dishFormat: parsed.dishFormat || null,
+      ingredients: Array.isArray(parsed.ingredients) && parsed.ingredients.length ? parsed.ingredients : localParsed.ingredients,
+      appliances: mergedAppliances,
+      dietaryGoals: getMergedDietaryGoalsFromQueryAndProfile(Array.isArray(parsed.dietaryGoals) ? parsed.dietaryGoals : []),
+      surplusScaleNote: parsed.surplusScaleNote || localParsed.surplusScaleNote || null,
+    };
+  } catch {
+    return localParsed;
+  }
+}
+
+function renderParsedIntentChips(targetContainer) {
+  if (!targetContainer) return;
+  const intent = state.parsedIntent;
+  if (!intent) {
+    targetContainer.hidden = true;
+    targetContainer.innerHTML = "";
+    return;
+  }
+
+  const chips = [];
+  if (intent.dishFormat) {
+    chips.push({ type: "format", key: intent.dishFormat, label: `Format: ${intent.dishFormat}` });
+  }
+  if (intent.ingredients?.length) {
+    intent.ingredients.forEach((ing, idx) => {
+      const text = ing.quantity ? `${ing.quantity} ${ing.name}` : ing.name;
+      chips.push({ type: "ingredient", key: String(idx), label: `Ingredient: ${text}` });
+    });
+  }
+  if (intent.appliances?.length) {
+    intent.appliances.forEach((appName) => {
+      chips.push({ type: "appliance", key: appName, label: `Appliance: ${appName}` });
+    });
+  }
+  if (intent.dietaryGoals?.length) {
+    intent.dietaryGoals.forEach((goal) => {
+      chips.push({ type: "diet", key: goal, label: `Diet: ${goal}` });
+    });
+  }
+  if (intent.surplusScaleNote) {
+    chips.push({ type: "surplus", key: "surplus", label: intent.surplusScaleNote });
+  }
+
+  if (!chips.length) {
+    targetContainer.hidden = true;
+    targetContainer.innerHTML = "";
+    return;
+  }
+
+  targetContainer.hidden = false;
+  targetContainer.innerHTML = chips
+    .map(
+      (c) => `
+      <span class="intent-chip ${c.type}">
+        <span>${c.label}</span>
+        <button type="button" class="intent-chip-remove" data-chip-type="${c.type}" data-chip-key="${c.key}" title="Remove constraint">✕</button>
+      </span>
+    `
+    )
+    .join("");
+
+  targetContainer.querySelectorAll(".intent-chip-remove").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const type = btn.dataset.chipType;
+      const key = btn.dataset.chipKey;
+      if (!state.parsedIntent) return;
+      if (type === "format") state.parsedIntent.dishFormat = null;
+      else if (type === "ingredient") state.parsedIntent.ingredients.splice(Number(key), 1);
+      else if (type === "appliance") {
+        state.parsedIntent.appliances = state.parsedIntent.appliances.filter((a) => a !== key);
+      } else if (type === "diet") {
+        state.parsedIntent.dietaryGoals = state.parsedIntent.dietaryGoals.filter((g) => g !== key);
+      } else if (type === "surplus") {
+        state.parsedIntent.surplusScaleNote = null;
+      }
+      renderParsedIntentChips(dom.parsedIntentChips);
+      renderParsedIntentChips(dom.optionsIntentChips);
+      if (dom.screens.options.classList.contains("active")) {
+        generateDishOptions(true);
+      }
+    });
+  });
+}
+
 // ---------------- GENERATE A HANDFUL OF DISH OPTIONS (WITH REGENERATE) ----------------
-async function generateDishOptions() {
+async function generateDishOptions(skipIntentReparse = false) {
   const promptText = dom.cravingInput.value.trim() || "Mediterranean Salmon, Quinoa & Greens";
   const modelLabel = state.selectedModel === "gemini-argon" ? "Gemini Argon" : "ChatGPT";
 
@@ -1819,6 +2274,12 @@ async function generateDishOptions() {
   const minVisualFeedback = new Promise((resolve) => setTimeout(resolve, 480));
 
   try {
+    if (!skipIntentReparse || !state.parsedIntent) {
+      state.parsedIntent = await parseOmniIntent(promptText);
+    }
+    renderParsedIntentChips(dom.parsedIntentChips);
+    renderParsedIntentChips(dom.optionsIntentChips);
+
     let options = null;
     const geminiKey = localStorage.getItem("chefcoach_gemini_key");
     const openaiKey = localStorage.getItem("chefcoach_openai_key");
@@ -2998,35 +3459,58 @@ function buildMultiOptionsWithCulinaryAI(promptText, regenCycle = 0) {
 }
 
 function buildLiveOptionsPrompt(userCraving) {
+  const intent = state.parsedIntent || parseOmniIntentLocal(userCraving);
   const activeToggleDiets = Object.entries(state.dietary)
     .filter(([, v]) => v)
     .map(([k]) => k);
   if (state.otherDietaryText && state.otherDietaryText.trim()) {
     activeToggleDiets.push(`Custom Priority: "${state.otherDietaryText.trim()}"`);
   }
-  const isMaxTaste = activeToggleDiets.length === 0;
+  const mergedDiets = Array.from(new Set([...activeToggleDiets, ...(intent.dietaryGoals || [])]));
+  const isMaxTaste = mergedDiets.length === 0;
   const activeDiets = isMaxTaste
     ? "MAXIMUM TASTE & CULINARY INDULGENCE (No dietary restrictions selected — prioritize restaurant-level flavor, cultured butter/cream, rich aromatics, umami glazes, and caramelization!)"
-    : activeToggleDiets.join(", ");
+    : mergedDiets.join(", ");
 
-  return `You are ChefCoach (${state.selectedModel === "gemini-argon" ? "Gemini Argon" : "ChatGPT"}).
-The user requested: "${userCraving}" for ${state.servings} servings (Regeneration variation #${state.regenIndex + 1}).
-Active dietary priorities: ${activeDiets}.
-CRITICAL NUTRITION & DIETARY INTELLIGENCE RULES:
-1. Analyze EVERY ingredient's real USDA/CoFID nutritional profile per 100g (kcal, proteinG, fiberG, cholMg, satFatG, addedSugarG) and include it in each ingredient object as "nutritionPer100g".
-2. ${isMaxTaste ? "Since NO dietary restrictions are selected, prioritize MAXIMUM TASTE: use rich restaurant techniques (brown butter basting, garlic-herb reduction, Parmigiano/crème fraîche or maple-caramel glaze, whole eggs, and deep Maillard sear)." : `Adapt secondary ingredients to strictly satisfy ${activeDiets}.`}
-3. If the user's requested main ingredient inherently conflicts with any active dietary priority (e.g. high saturated fat/cholesterol when cholesterol-safe is active, low protein when protein-rich is active, low fiber when fiber-rich is active, high sugar when no-added-sugar is active, or violates "${state.otherDietaryText || ""}"), include a specific explanation in "liveConflictWarnings" (array of strings) and a compliant alternative dish/ingredient in "liveSuggestedSafeSwap".
-4. Dyslexia-Friendly Steps: Write every step "instruction" as 2 to 3 short, simple sentences separated by periods (1 action per sentence). Never write a long wall of text!
-5. All quantities MUST be in grams (g) or milliliters (ml). Never write the word "(Metric)".
-Return ONLY valid JSON with an "options" array containing 3 distinct dish objects:
+  const profileContext = buildKitchenProfilePromptContext();
+  const isIngredientOnlyDiscovery = !intent.dishFormat;
+
+  const discoveryInstructions = isIngredientOnlyDiscovery
+    ? `DISCOVERY LOGIC (NO SPECIFIC DISH FORMAT SPECIFIED):
+- Do NOT return plain porridge or repetitive single-format variations.
+- Generate 4 distinct, high-fit recipe archetypes spanning different formats (e.g. a baked loaf/bread, baked bars/squares, pancakes/fritters, and a savoury or skillet/muffin option where fitting).
+- Cross-reference the user's Saved Favourites & Recent Cooking History first — if a past favourite or close pattern matches these ingredients, surface an elevated/tailored variation of it as Option 1.
+- Prioritise the user's Owned Appliances (e.g. air-fryer + silicone loaf insert formats if in their profile) with exact °C temperatures and dual-tray batch splitting if batter volume is heavy.
+- SURPLUS SCALING: If the user entered a large quantity of a perishable ingredient (e.g. ${intent.surplusScaleNote || "multiple bananas/produce"}), propose batch-scaled or multi-loaf formats designed to use up that exact surplus.`
+    : `FORMAT & CONSTRAINT EXECUTION:
+- Honour the requested dish format "${intent.dishFormat}" and exact ingredient quantities (${JSON.stringify(intent.ingredients)}).
+- Adapt baking/cooking method, °C temperature, and batch splitting to the user's appliances (${(intent.appliances || []).join(", ") || "profile defaults"}).`;
+
+  return `You are ChefCoach (${state.selectedModel === "gemini-argon" ? "Gemini Argon" : "ChatGPT"}), an intelligent culinary strategist and food scientist.
+User Query: "${userCraving}" for ${state.servings} servings (Variation #${state.regenIndex + 1}).
+Parsed Omni-Intent: ${JSON.stringify(intent)}
+Active Dietary & Culinary Goals: ${activeDiets}.
+
+${profileContext}
+
+${discoveryInstructions}
+
+CRITICAL FOOD-SCIENCE & NUTRITION RULES:
+1. Analyze EVERY ingredient's real USDA/CoFID nutritional profile per 100g (kcal, proteinG, fatG, carbsG, fiberG, cholMg, satFatG, addedSugarG) and include it in each ingredient object as "nutritionPer100g".
+2. ${isMaxTaste ? "Since NO dietary restrictions are selected, prioritize MAXIMUM TASTE and classic technique." : `Adapt ingredients and proportions to strictly satisfy: ${activeDiets}.`}
+3. Preserve food-science mechanics: balance free liquid to dry starch/soluble fibre (e.g. oat flour vs. oat bran), scale leavening proportionally to flour weight, and split into 2 trays if batter exceeds standard air-fryer silicone tray capacity.
+4. Dyslexia-Friendly Steps: Write every step "instruction" as 2 to 3 short, simple sentences separated by periods (1 action per sentence). Include exact °C temperatures and metric scale weights.
+5. ALL quantities MUST be in metric weights/volumes (g, ml, °C). Never use cups, tablespoons, or °F.
+Return ONLY valid JSON with an "options" array containing ${isIngredientOnlyDiscovery ? "4" : "3"} distinct dish objects:
 {
   "options": [
     {
-      "styleTag": "15-Min Skillet",
-      "prepTime": "15 mins",
+      "styleTag": "Air Fryer Loaf • 2 Trays",
+      "prepTime": "35 mins",
+      "servings": ${state.servings},
       "title": "string",
       "summary": "string",
-      "dietaryNote": "How this dish satisfies ${activeDiets}",
+      "dietaryNote": "How this dish satisfies goals, appliances, and surplus scaling",
       "liveConflictWarnings": [],
       "liveSuggestedSafeSwap": null,
       "ingredients": [
@@ -3036,7 +3520,7 @@ Return ONLY valid JSON with an "options" array containing 3 distinct dish object
           "qtyMetric": "320 g",
           "checked": true,
           "replacedFrom": null,
-          "nutritionPer100g": { "kcal": 165, "proteinG": 28, "fiberG": 0, "cholMg": 55, "satFatG": 1.2, "addedSugarG": 0 },
+          "nutritionPer100g": { "kcal": 165, "proteinG": 28, "fatG": 3.5, "carbsG": 0, "fiberG": 0, "cholMg": 55, "satFatG": 1.2, "addedSugarG": 0 },
           "alternatives": [
             { "name": "string", "qtyMetric": "320 g", "reason": "string" }
           ]
@@ -3046,7 +3530,7 @@ Return ONLY valid JSON with an "options" array containing 3 distinct dish object
         {
           "phase": "Step 1 • Prep",
           "instruction": "Short sentence 1 referencing [ing-1]. Short sentence 2.",
-          "tip": "Helpful culinary tip",
+          "tip": "Food-science tip",
           "timerMinutes": 5
         }
       ]
@@ -3283,13 +3767,73 @@ function appendBadgeTo(container, text) {
 function selectDishOption(opt) {
   state.recipe = JSON.parse(JSON.stringify(opt));
   state.pivotSuggestion = null;
+  state.copilotMessages = [
+    {
+      role: "coach",
+      text: `Co-Pilot ready for "${state.recipe.title}". Ask me to swap flours/fruits, scale quantities, adapt for your appliances, or break down calories & macros.`,
+    },
+  ];
   dom.aiAdaptationBanner.hidden = true;
+  recordRecipeToHistory(state.recipe, "selected");
+  renderCopilotMessages();
   renderIngredientsScreen();
   showScreen("ingredients");
 }
 
 // ---------------- SCREEN 3: INGREDIENTS, SMART SWAPS & GOOGLE KEEP ----------------
-function renderIngredientsScreen() {
+function renderLiveMacroSummaryBar(calc, animatePulse = false) {
+  if (!dom.liveMacroSummaryBar || !dom.liveMacroGrid || !calc) return;
+  const p = calc.portion;
+  const b = calc.batch || {
+    kcalNum: p.kcalNum * (state.servings || 2),
+    proteinNum: p.proteinNum * (state.servings || 2),
+    fatNum: +(p.fatNum * (state.servings || 2)).toFixed(1),
+    carbsNum: p.carbsNum * (state.servings || 2),
+    fiberNum: p.fiberNum * (state.servings || 2),
+    servings: state.servings || 2,
+    totalGrams: 0,
+  };
+
+  if (dom.liveMacroBatchSummary) {
+    dom.liveMacroBatchSummary.textContent = `Batch (${b.totalGrams} g • ${b.servings} servings): ${b.kcalNum} kcal`;
+  }
+
+  dom.liveMacroGrid.innerHTML = `
+    <div class="live-macro-cell">
+      <span class="live-macro-val">${p.kcalNum}</span>
+      <span class="live-macro-lbl">kcal / serve</span>
+      <span class="live-macro-sub">${b.kcalNum} total</span>
+    </div>
+    <div class="live-macro-cell">
+      <span class="live-macro-val">${p.proteinNum}g</span>
+      <span class="live-macro-lbl">Protein</span>
+      <span class="live-macro-sub">${b.proteinNum}g total</span>
+    </div>
+    <div class="live-macro-cell">
+      <span class="live-macro-val">${p.fatNum}g</span>
+      <span class="live-macro-lbl">Fat</span>
+      <span class="live-macro-sub">${b.fatNum}g total</span>
+    </div>
+    <div class="live-macro-cell">
+      <span class="live-macro-val">${p.carbsNum}g</span>
+      <span class="live-macro-lbl">Carbs</span>
+      <span class="live-macro-sub">${b.carbsNum}g total</span>
+    </div>
+    <div class="live-macro-cell">
+      <span class="live-macro-val">${p.fiberNum}g</span>
+      <span class="live-macro-lbl">Fibre</span>
+      <span class="live-macro-sub">${b.fiberNum}g total</span>
+    </div>
+  `;
+
+  if (animatePulse) {
+    dom.liveMacroSummaryBar.classList.remove("macro-pulse");
+    void dom.liveMacroSummaryBar.offsetWidth;
+    dom.liveMacroSummaryBar.classList.add("macro-pulse");
+  }
+}
+
+function renderIngredientsScreen(animateMacros = false) {
   const r = state.recipe;
   if (!r) return;
 
@@ -3318,7 +3862,9 @@ function renderIngredientsScreen() {
 
   if (dom.detailPrepTime) dom.detailPrepTime.textContent = r.prepTime || "15 mins";
   if (dom.detailDifficulty) dom.detailDifficulty.textContent = (r.steps?.length || 3) <= 3 ? "Easy" : "Medium";
-  if (dom.detailServings) dom.detailServings.textContent = String(state.servings);
+  if (dom.detailServings) dom.detailServings.textContent = String(Number(r.servings) || state.servings);
+
+  renderLiveMacroSummaryBar(calc, animateMacros);
 
   if (dom.nutriBasisTitle) {
     dom.nutriBasisTitle.textContent = `${activeNutri.basisLabel} • Cholesterol: ${activeNutri.cholMgNum} mg • Added Sugar: ${activeNutri.addedSugar}`;
@@ -3349,6 +3895,257 @@ function renderIngredientsScreen() {
 
   renderIngredientRows();
   renderDetailStepsPreview();
+}
+
+// ---------------- STATEFUL CULINARY CO-PILOT MODE ----------------
+function initCopilotUI() {
+  if (dom.copilotToggleBtn && dom.copilotBody) {
+    dom.copilotToggleBtn.addEventListener("click", () => {
+      const isHidden = dom.copilotBody.hidden;
+      dom.copilotBody.hidden = !isHidden;
+      dom.copilotToggleBtn.setAttribute("aria-expanded", String(isHidden));
+      dom.copilotToggleBtn.textContent = isHidden ? "Collapse" : "Expand";
+    });
+  }
+
+  if (dom.copilotQuickChips) {
+    dom.copilotQuickChips.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-copilot]");
+      if (!btn || !dom.copilotInput) return;
+      dom.copilotInput.value = btn.dataset.copilot;
+      sendCopilotMessage();
+    });
+  }
+
+  if (dom.copilotSendBtn) {
+    dom.copilotSendBtn.addEventListener("click", sendCopilotMessage);
+  }
+  if (dom.copilotInput) {
+    dom.copilotInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        sendCopilotMessage();
+      }
+    });
+  }
+}
+
+function renderCopilotMessages() {
+  if (!dom.copilotChatStream) return;
+  dom.copilotChatStream.innerHTML = "";
+  (state.copilotMessages || []).forEach((msg) => {
+    const div = document.createElement("div");
+    div.className = `copilot-msg ${msg.role}`;
+    div.textContent = msg.text;
+    dom.copilotChatStream.appendChild(div);
+  });
+  dom.copilotChatStream.scrollTop = dom.copilotChatStream.scrollHeight;
+}
+
+function buildCopilotSystemPrompt(userMessage, recipe, calc) {
+  const profileContext = buildKitchenProfilePromptContext();
+  return `You are ChefCoach Culinary Co-Pilot — a stateful, food-science-backed recipe editor.
+${profileContext}
+
+CURRENT ACTIVE RECIPE JSON:
+${JSON.stringify(recipe)}
+
+CURRENT COMPUTED NUTRITION BREAKDOWN:
+${JSON.stringify({ batch: calc.batch, perServing: calc.portion })}
+
+USER REQUEST:
+"${userMessage}"
+
+FOOD-SCIENCE RATIO GUARDRAILS (MUST OBEY ON EVERY MUTATION):
+1. Free Liquid Balance: Whenever dry starches/flours (e.g., oat flour vs. oat bran, almond meal, coconut flour) or high-water fruits/veg (bananas, apples, zucchini) are added, removed, or swapped, recalculate free liquid (milk/water/chia gel) explicitly.
+2. Leavening Ratio: Scale bicarbonate of soda + acid (apple cider vinegar/lemon) or baking powder proportionally to dry flour weight.
+3. Appliance & Tray Capacity: Check the user's owned appliances. If total batter/dough exceeds standard air-fryer silicone tray capacity (~650-800g per insert), warn the user in "batchWarning" and split the batch cleanly across 2 trays with adjusted °C temperature & bake time.
+4. Metric Digital Scale Precision: ALL quantities MUST be in grams (g), milliliters (ml), and Celsius (°C). Never use cups, spoons, or °F.
+5. Analytical Questions: If the user only asks a question (e.g., "how fattening is this?", "why did we use vinegar?"), set "didMutateRecipe": false, set "updatedRecipe": null, and give a precise calorie/macro/food-science breakdown in "explanation".
+
+Return ONLY valid JSON:
+{
+  "explanation": "Concise, food-science-backed explanation (hydration, starch vs soluble fibre, leavening, capacity, and calorie/macro deltas).",
+  "batchWarning": string or null,
+  "didMutateRecipe": boolean,
+  "updatedRecipe": null or {
+    "title": string,
+    "summary": string,
+    "styleTag": string,
+    "prepTime": string,
+    "servings": number,
+    "ingredients": [
+      {
+        "id": string,
+        "name": string,
+        "qtyMetric": string,
+        "checked": true,
+        "replacedFrom": string or null,
+        "nutritionPer100g": { "kcal": number, "proteinG": number, "fatG": number, "carbsG": number, "fiberG": number, "cholMg": number, "satFatG": number, "addedSugarG": number },
+        "alternatives": [{ "name": string, "qtyMetric": string, "reason": string }]
+      }
+    ],
+    "steps": [
+      { "phase": string, "instruction": string, "tip": string, "timerMinutes": number }
+    ]
+  }
+}`;
+}
+
+async function tryLiveCopilotWithAI(userMessage, recipe, calc) {
+  const prompt = buildCopilotSystemPrompt(userMessage, recipe, calc);
+  const geminiKey = localStorage.getItem("chefcoach_gemini_key");
+  const openaiKey = localStorage.getItem("chefcoach_openai_key");
+
+  try {
+    if ((state.selectedModel === "gemini-argon" || !openaiKey) && geminiKey) {
+      const gRes = await callGeminiGenerateContent(geminiKey, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json" },
+      });
+      if (gRes.ok) {
+        const raw = gRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        return raw ? JSON.parse(raw) : null;
+      }
+    }
+    if (openaiKey) {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          response_format: { type: "json_object" },
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const raw = data?.choices?.[0]?.message?.content;
+        return raw ? JSON.parse(raw) : null;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function applyLocalCopilotFallback(userMessage, recipe, calc) {
+  const lower = userMessage.toLowerCase();
+  const updated = JSON.parse(JSON.stringify(recipe));
+
+  // Analytical macro query fallback
+  if (/how\s*fattening|macro|calor|nutrition|kcal/i.test(lower)) {
+    const p = calc.portion;
+    const b = calc.batch;
+    return {
+      explanation: `Per serving (${b.servings} servings): ${p.kcalNum} kcal, ${p.proteinNum}g protein, ${p.fatNum}g fat (${p.satFatNum}g sat. fat), ${p.carbsNum}g carbs, ${p.fiberNum}g fibre. Whole batch (${b.totalGrams}g): ${b.kcalNum} kcal, ${b.fatNum}g fat, ${b.fiberNum}g fibre.`,
+      batchWarning: null,
+      didMutateRecipe: false,
+      updatedRecipe: null,
+    };
+  }
+
+  // Scale factor detection (e.g., "double", "scale to 6 bananas")
+  const scaleMatch = lower.match(/scale\s*(?:to|by)?\s*(\d+)/);
+  if (/double/i.test(lower) || scaleMatch) {
+    const factor = /double/i.test(lower) ? 2 : Math.max(1.25, Math.min(3, parseFloat(scaleMatch[1]) / 3));
+    updated.ingredients.forEach((ing) => {
+      const g = parseGramsFromQtyMetric(ing.qtyMetric);
+      const unit = /ml/i.test(ing.qtyMetric) ? "ml" : "g";
+      ing.qtyMetric = `${Math.round(g * factor)} ${unit}`;
+    });
+    updated.servings = Math.round((Number(updated.servings) || state.servings || 2) * factor);
+    const totalWeight = updated.ingredients.reduce((s, i) => s + parseGramsFromQtyMetric(i.qtyMetric), 0);
+    const needsSplit = totalWeight > 750;
+    return {
+      explanation: `Scaled all ingredient weights by ${factor.toFixed(1)}x (${totalWeight}g total batch) while preserving hydration and leavening-to-flour ratios.`,
+      batchWarning: needsSplit
+        ? `Batch weight (${totalWeight}g) exceeds a single silicone air-fryer insert — split evenly across 2 trays at 160°C.`
+        : null,
+      didMutateRecipe: true,
+      updatedRecipe: updated,
+    };
+  }
+
+  return {
+    explanation: `Add a Gemini or OpenAI API key in Preferences for live food-science Co-Pilot mutations, or use the ingredient swap/add tools below to edit "${recipe.title}".`,
+    batchWarning: null,
+    didMutateRecipe: false,
+    updatedRecipe: null,
+  };
+}
+
+async function sendCopilotMessage() {
+  if (!state.recipe || !dom.copilotInput) return;
+  const userMessage = dom.copilotInput.value.trim();
+  if (!userMessage) return;
+
+  dom.copilotInput.value = "";
+  state.copilotMessages.push({ role: "user", text: userMessage });
+  renderCopilotMessages();
+
+  if (dom.copilotSendBtn) {
+    dom.copilotSendBtn.disabled = true;
+    dom.copilotSendBtn.textContent = "...";
+  }
+
+  try {
+    const calc = computeRecipeNutritionAndConflicts(state.recipe);
+    let result = await tryLiveCopilotWithAI(userMessage, state.recipe, calc);
+    if (!result || !result.explanation) {
+      result = applyLocalCopilotFallback(userMessage, state.recipe, calc);
+    }
+
+    if (result.didMutateRecipe && result.updatedRecipe && Array.isArray(result.updatedRecipe.ingredients)) {
+      state.recipe = result.updatedRecipe;
+      if (state.recipe.servings) {
+        state.servings = Number(state.recipe.servings) || state.servings;
+      }
+      recordRecipeToHistory(state.recipe, "copilot-edited");
+      renderIngredientsScreen(true);
+    }
+
+    state.copilotMessages.push({ role: "coach", text: result.explanation });
+    if (result.batchWarning) {
+      state.copilotMessages.push({ role: "warning", text: `⚠️ ${result.batchWarning}` });
+    }
+    renderCopilotMessages();
+  } finally {
+    if (dom.copilotSendBtn) {
+      dom.copilotSendBtn.disabled = false;
+      dom.copilotSendBtn.textContent = "Apply";
+    }
+  }
+}
+
+function saveAsNewIteration() {
+  if (!state.recipe) return;
+  const copy = JSON.parse(JSON.stringify(state.recipe));
+  const baseTitle = copy.title.replace(/\s*\(v\d+\)$/i, "").trim();
+  const existingVersions = state.savedRecipes.filter((s) =>
+    s.title.toLowerCase().startsWith(baseTitle.toLowerCase())
+  ).length;
+  copy.title = `${baseTitle} (v${existingVersions + 1})`;
+  copy.rating = state.currentRating || 5;
+  copy.savedAt = new Date().toLocaleDateString();
+
+  state.recipe = copy;
+  state.savedRecipes.unshift(copy);
+  persistSavedRecipes();
+  recordRecipeToHistory(copy, "saved-iteration");
+  renderIngredientsScreen(true);
+
+  if (dom.saveNewIterationBtn) {
+    const orig = dom.saveNewIterationBtn.textContent;
+    dom.saveNewIterationBtn.textContent = `✅ Saved ${copy.title.match(/\(v\d+\)/)?.[0] || "Iteration"}`;
+    setTimeout(() => {
+      if (dom.saveNewIterationBtn) dom.saveNewIterationBtn.textContent = orig;
+    }, 2200);
+  }
 }
 
 function renderDetailStepsPreview() {
@@ -4191,9 +4988,6 @@ function renderCurrentStep(shouldAutoSpeak = false) {
     dom.nextStepSubText.textContent = `Up next: Step ${idx + 2} of ${total} (or say "Next")`;
   }
 
-  // Pre-fetch current step audio in the background (1 request at a time to avoid Gemini rate limits)
-  prefetchStepAudio(idx);
-
   if (shouldAutoSpeak && state.speakerEnabled) {
     speakCurrentStep(true);
   }
@@ -4496,6 +5290,7 @@ function stopSpeech() {
   }
   if ("speechSynthesis" in window) {
     try {
+      activeUtteranceRef = null;
       if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
         window.speechSynthesis.cancel();
       }
@@ -4508,6 +5303,13 @@ function stopSpeech() {
 let activeUtteranceRef = null;
 let speechResumeTimer = null;
 
+function isIosDevice() {
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
 function speakWithBrowserTTS(fullSpeechText, onDoneCallback) {
   if (!("speechSynthesis" in window)) {
     if (onDoneCallback) onDoneCallback();
@@ -4519,55 +5321,52 @@ function speakWithBrowserTTS(fullSpeechText, onDoneCallback) {
     speechResumeTimer = null;
   }
 
-  const launchUtterance = () => {
-    try {
-      const utterance = new SpeechSynthesisUtterance(fullSpeechText);
-      activeUtteranceRef = utterance;
-      // Do NOT override utterance.voice on iOS/mobile: letting the OS use its default installed system Siri voice
-      // prevents iOS Safari from silently failing on un-downloaded voice profiles!
-      utterance.lang = navigator.language || "en-US";
-      utterance.volume = 1.0;
-      utterance.rate = 0.98;
-      utterance.pitch = 1.0;
-      utterance.onend = () => {
-        activeUtteranceRef = null;
-        if (onDoneCallback) onDoneCallback();
-      };
-      utterance.onerror = () => {
-        activeUtteranceRef = null;
-        if (onDoneCallback) onDoneCallback();
-      };
-
-      window.speechSynthesis.speak(utterance);
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-      }
-    } catch {
-      if (onDoneCallback) onDoneCallback();
-    }
-  };
-
   try {
+    // Cancel any active/queued speech synchronously inside the tap gesture
     if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
       window.speechSynthesis.cancel();
-      speechResumeTimer = setTimeout(launchUtterance, 80);
-    } else {
-      launchUtterance();
+    }
+
+    const utterance = new SpeechSynthesisUtterance(fullSpeechText);
+    activeUtteranceRef = utterance;
+    utterance.lang = navigator.language || "en-US";
+    utterance.volume = 1.0;
+    utterance.rate = 0.98;
+    utterance.pitch = 1.0;
+
+    // On iOS/iPadOS, leave utterance.voice unset so Apple uses the device's built-in Siri/system voice
+    // without risking silent failures on un-downloaded voices. On desktop, pick a natural voice if available.
+    if (!isIosDevice()) {
+      const preferredVoice = pickBestNaturalBrowserVoice();
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
+      }
+    }
+
+    utterance.onend = () => {
+      activeUtteranceRef = null;
+      if (onDoneCallback) onDoneCallback();
+    };
+    utterance.onerror = () => {
+      activeUtteranceRef = null;
+      if (onDoneCallback) onDoneCallback();
+    };
+
+    window.speechSynthesis.speak(utterance);
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
     }
   } catch {
-    launchUtterance();
+    activeUtteranceRef = null;
+    if (onDoneCallback) onDoneCallback();
   }
 }
 
-async function speakCurrentStep(force = false) {
+function speakCurrentStep(force = false) {
   if (!state.speakerEnabled && !force) return;
   if (!state.recipe) return;
 
   const fullSpeechText = buildStepSpeechText(state.currentStepIndex);
-
-  // Unlock iOS AudioContext synchronously during the user's tap gesture
-  // (and unlock HTMLAudioElement too if audio isn't already cached)
-  unlockMobileAudioMediaChannel(!geminiTtsAudioCache.has(fullSpeechText));
 
   if (state.currentAudio) {
     try {
@@ -4577,7 +5376,7 @@ async function speakCurrentStep(force = false) {
     }
     state.currentAudio = null;
   }
-  const myRequestToken = ++activeTtsRequestToken;
+  ++activeTtsRequestToken;
   state.isCoachSpeaking = true;
 
   // Pause microphone recognition while coach is speaking so it never transcribes its own voice
@@ -4587,6 +5386,10 @@ async function speakCurrentStep(force = false) {
     } catch {
       // Ignore
     }
+  }
+
+  if (dom.speakerLabel) {
+    dom.speakerLabel.textContent = state.speakerEnabled ? "Voice ON" : "Voice Off";
   }
 
   const resumeMicAfterSpeech = () => {
@@ -4605,33 +5408,7 @@ async function speakCurrentStep(force = false) {
     }
   };
 
-  const geminiKey = (localStorage.getItem("chefcoach_gemini_key") || "").trim();
-
-  // 1. If Gemini API key is configured & supported, play pre-cached/generated Gemini Native Audio
-  if (geminiKey && !sessionGeminiTtsUnsupported) {
-    if (dom.speakerLabel && state.speakerEnabled && !geminiTtsAudioCache.has(fullSpeechText)) {
-      dom.speakerLabel.textContent = "Loading...";
-    }
-    const playedGemini = await tryPlayGeminiNativeTTS(
-      fullSpeechText,
-      geminiKey,
-      resumeMicAfterSpeech,
-      myRequestToken
-    );
-    if (myRequestToken !== activeTtsRequestToken) return;
-    if (playedGemini) {
-      if (dom.speakerLabel && state.speakerEnabled) {
-        dom.speakerLabel.textContent = "Voice ON";
-      }
-      return;
-    }
-  }
-
-  if (myRequestToken !== activeTtsRequestToken) return;
-  if (dom.speakerLabel) {
-    dom.speakerLabel.textContent = state.speakerEnabled ? "Voice ON" : "Voice Off";
-  }
-  // 2. Fallback to native OS SpeechSynthesis
+  // Speak synchronously using the device's native voice (iOS Siri / system SpeechSynthesis)
   speakWithBrowserTTS(fullSpeechText, resumeMicAfterSpeech);
 }
 
@@ -4993,6 +5770,7 @@ function saveCurrentRecipeToBook(rating = 5) {
   }
 
   persistSavedRecipes();
+  recordRecipeToHistory(copy, "saved");
 
   if (dom.saveRecipeFromIngBtn) {
     dom.saveRecipeFromIngBtn.classList.add("saved");
