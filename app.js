@@ -2075,11 +2075,13 @@ function parseOmniIntentLocal(queryText) {
   const q = String(queryText || "").trim();
   const lower = q.toLowerCase();
 
-  const formatMatch = lower.match(/\b(loaf|bread|cake|muffins?|pancakes?|fritters?|curry|stir-?fry|salad|soup|bowl|pasta|bake|bars?|porridge|dinner|breakfast|snack|omelette)\b/);
+  const formatMatch = lower.match(
+    /\b(loaf|bread|cake|muffins?|pancakes?|fritters?|burgers?|patties|curry|stir-?fry|salad|soup|bowl|pasta|bake|bars?|porridge|dinner|breakfast|snack|omelette)\b/
+  );
   const dishFormat = formatMatch ? formatMatch[1] : null;
 
   const appliances = [];
-  if (/air\s*fryer/i.test(lower)) appliances.push("Air Fryer");
+  if (/air\s*-?\s*fryer|airfryer/i.test(lower)) appliances.push("Air Fryer");
   if (/silicone\s*(tray|trays|loaf|insert|inserts|mold|mould)/i.test(lower)) appliances.push("Silicone Loaf Inserts");
   if (/stovetop|skillet|pan/i.test(lower)) appliances.push("Stovetop");
   if (/no\s*oven/i.test(lower)) appliances.push("No Oven");
@@ -2099,10 +2101,12 @@ function parseOmniIntentLocal(queryText) {
   if (/high\s*fib(er|re)/i.test(lower)) queryDiets.push("High Fibre");
   if (/gluten[-\s]*free/i.test(lower)) queryDiets.push("Gluten-Free");
 
-  // Extract quantity + ingredient pairs (e.g. "6 bananas", "400g oat flour", "oats")
+  // Strip appliance, method, dietary & filler words so only true food/ingredient tokens remain
   const cleanedForIngs = q
-    .replace(/\b(using|with|in|for|no|high|quick|easy|healthy|air\s*fryer|silicone\s*trays?|stovetop|no\s*oven|dairy|sugar|protein|dinner|breakfast|snack|lunch)\b/gi, " ")
-    .replace(/\s+/g, " ");
+    .replace(/\b(using|with|in|on|for|no|high|quick|easy|healthy|air\s*-?\s*fryer|airfryer|silicone\s*(?:loaf\s*)?(?:trays?|inserts?|molds?|moulds?)|stovetop|skillet|oven|dairy|sugar|protein|dinner|breakfast|snack|lunch)\b/gi, " ")
+    .replace(/\+/g, ",")
+    .replace(/\s+/g, " ")
+    .trim();
   const rawTokens = cleanedForIngs.split(/,|&|\band\b/i).map((s) => s.trim()).filter(Boolean);
   const ingredients = [];
   rawTokens.forEach((tok) => {
@@ -2316,6 +2320,11 @@ async function generateDishOptions(skipIntentReparse = false) {
 function buildMultiOptionsWithCulinaryAI(promptText, regenCycle = 0) {
   const lower = promptText.toLowerCase();
   const scale = state.servings / 2;
+  const intent = state.parsedIntent || parseOmniIntentLocal(promptText);
+  const useAirFryer = (intent.appliances || []).some((a) => /air\s*fryer|silicone/i.test(a));
+  const isEggless = Boolean(
+    state.kitchenProfile?.defaults?.eggless || (intent.dietaryGoals || []).some((g) => /eggless/i.test(g))
+  );
 
   // Detect quantity + main ingredient if user typed something like "SOMETHING WITH 4 BANANAS"
   if (lower.includes("banana")) {
@@ -2840,7 +2849,109 @@ function buildMultiOptionsWithCulinaryAI(promptText, regenCycle = 0) {
       },
     ];
 
-    const activeBananaPool = state.selectedModel === "chatgpt" ? chatgptBananaPool : bananaPool;
+    const airFryerBananaPool = useAirFryer
+      ? [
+          {
+            styleTag: count >= 4 ? "Air Fryer • 2 Silicone Trays" : "Air Fryer • Silicone Loaf",
+            prepTime: "24 mins",
+            isSweet: true,
+            baseProteinNum: 22,
+            baseFiberNum: 11,
+            title: `Air Fryer ${count}-Banana & Oat Loaf${count >= 4 ? " (2 Silicone Trays)" : ""}`,
+            summary: `Uses all ${count} bananas (${bananaG} g) with oat flour/rolled oats and ${isEggless ? "chia gel" : "egg whites"}, baked at 160°C in air fryer silicone trays.`,
+            ingredients: [
+              { id: "ing-1", name: `Ripe bananas (${count} whole, mashed)`, baseGrams: bananaG / scale, unit: "g", isFiberCore: true, alternatives: [] },
+              { id: "ing-2", name: "Oat flour (blended rolled oats)", baseGrams: Math.round((count * 55) / scale), unit: "g", isFiberCore: true, alternatives: [] },
+              { id: "ing-3", name: isEggless ? "Chia seed gel (20 g chia + 100 ml water)" : "Liquid egg whites", baseGrams: 120, unit: "g", isProteinCore: true, alternatives: [] },
+              { id: "ing-4", name: "Unsweetened almond or oat milk", baseGrams: 90, unit: "ml", alternatives: [] },
+              { id: "ing-5", name: "Bicarbonate of soda & apple cider vinegar", baseGrams: 10, unit: "g", alternatives: [] },
+            ],
+            steps: [
+              {
+                phase: "Step 1 • Wet Base & Hydration",
+                instruction: "Mash [ing-1] smooth in a bowl. Stir in [ing-3], [ing-4], and [ing-5] until evenly combined.",
+                tip: "Letting chia or oat flour hydrate for 3 minutes improves crumb structure.",
+                timerMinutes: 3,
+              },
+              {
+                phase: "Step 2 • Fold Dry & Split Trays",
+                instruction: `Fold in [ing-2] gently without overmixing. ${count >= 4 ? "Divide batter evenly between 2 silicone loaf inserts so heat circulates properly." : "Pour batter into a lined silicone loaf insert."}`,
+                tip: "Splitting heavy banana-oat batter across 2 trays prevents an undercooked centre.",
+                timerMinutes: null,
+              },
+              {
+                phase: "Step 3 • Air Fry at 160°C",
+                instruction: "Air fry at 160°C for 22 minutes until a skewer comes out clean. Cool for 10 minutes before slicing.",
+                tip: "160°C bakes dense fruit-oat batter through without scorching the top.",
+                timerMinutes: 22,
+              },
+            ],
+          },
+          {
+            styleTag: "Air Fryer • 165°C Bars",
+            prepTime: "18 mins",
+            isSweet: true,
+            baseProteinNum: 20,
+            baseFiberNum: 10,
+            title: `Air Fryer ${count}-Banana Oat Bake Bars`,
+            summary: `Chewy, scale-measured banana oat bars baked in the air fryer at 165°C with zero refined sugar.`,
+            ingredients: [
+              { id: "ing-1", name: `Mashed ripe bananas (${count} whole)`, baseGrams: bananaG / scale, unit: "g", isFiberCore: true, alternatives: [] },
+              { id: "ing-2", name: "Rolled oats", baseGrams: Math.round((count * 50) / scale), unit: "g", isFiberCore: true, alternatives: [] },
+              { id: "ing-3", name: "Ground flaxseed & cinnamon", baseGrams: 25, unit: "g", isFiberCore: true, alternatives: [] },
+              { id: "ing-4", name: "Extra-virgin olive oil or nut butter", baseGrams: 30, unit: "g", alternatives: [] },
+            ],
+            steps: [
+              {
+                phase: "Step 1 • Mix Batter",
+                instruction: "Mash [ing-1] with [ing-4]. Fold in [ing-2] and [ing-3] until thick.",
+                tip: "Oats absorb banana moisture rapidly—rest 5 minutes before pressing into the tray.",
+                timerMinutes: 5,
+              },
+              {
+                phase: "Step 2 • Air Fry at 165°C",
+                instruction: "Press evenly into silicone air-fryer trays. Air fry at 165°C for 16 minutes until golden at the edges.",
+                tip: "Slice once cool for clean, portable bars.",
+                timerMinutes: 16,
+              },
+            ],
+          },
+          {
+            styleTag: "Air Fryer • 175°C Bites",
+            prepTime: "14 mins",
+            isSweet: true,
+            baseProteinNum: 18,
+            baseFiberNum: 9,
+            title: `Crispy Air Fryer ${count}-Banana Oat Clusters`,
+            summary: `Portioned banana-oat clusters crisped in the air fryer basket at 175°C for a fast batch snack.`,
+            ingredients: [
+              { id: "ing-1", name: `Ripe bananas (${count} whole, mashed)`, baseGrams: bananaG / scale, unit: "g", isFiberCore: true, alternatives: [] },
+              { id: "ing-2", name: "Rolled oats", baseGrams: Math.round((count * 55) / scale), unit: "g", isFiberCore: true, alternatives: [] },
+              { id: "ing-3", name: "Chia seeds & vanilla", baseGrams: 20, unit: "g", isFiberCore: true, alternatives: [] },
+            ],
+            steps: [
+              {
+                phase: "Step 1 • Scoop Clusters",
+                instruction: "Combine [ing-1], [ing-2], and [ing-3] into a thick scoopable batter. Drop 35 g mounds onto perforated parchment in the air fryer basket.",
+                tip: "Leave 2 cm space between mounds for airflow.",
+                timerMinutes: null,
+              },
+              {
+                phase: "Step 2 • Air Fry at 175°C",
+                instruction: "Air fry at 175°C for 12 minutes until crisp outside and tender inside.",
+                tip: "Work in 2 batches if using a single basket.",
+                timerMinutes: 12,
+              },
+            ],
+          },
+        ]
+      : [];
+
+    const activeBananaPool = useAirFryer
+      ? [...airFryerBananaPool, ...(state.selectedModel === "chatgpt" ? chatgptBananaPool : bananaPool)]
+      : state.selectedModel === "chatgpt"
+      ? chatgptBananaPool
+      : bananaPool;
     const picked = [
       activeBananaPool[regenCycle % activeBananaPool.length],
       activeBananaPool[(regenCycle + 1) % activeBananaPool.length],
@@ -2849,9 +2960,12 @@ function buildMultiOptionsWithCulinaryAI(promptText, regenCycle = 0) {
     return picked.map((raw) => applyDietaryEngineeringToRecipe(raw, scale));
   }
 
-  // General Dynamic Multi-Option Generator for ANY user request
+  // General Dynamic Multi-Option Generator for ANY user request (strip appliance/method words cleanly)
   const cleaned = promptText
     .replace(/^(something\s+with|make\s+me|i\s+have|cook\s+with|recipe\s+with|recipe\s+for)\s+/i, "")
+    .replace(/\b(in\s+an?\s+air\s*-?\s*fryer|in\s+airfryer|air\s*-?\s*fryer|airfryer|silicone\s*(?:loaf\s*)?(?:trays?|inserts?)|stovetop|no\s*oven|using)\b/gi, " ")
+    .replace(/\+/g, " ")
+    .replace(/\s+/g, " ")
     .trim() || "Mediterranean Salmon & Greens";
   const subjectTitle = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 
@@ -3455,7 +3569,23 @@ function buildMultiOptionsWithCulinaryAI(promptText, regenCycle = 0) {
     activePool[(regenCycle + 2) % activePool.length],
   ];
 
-  return picked.map((raw) => applyDietaryEngineeringToRecipe(raw, scale));
+  return picked.map((raw) => {
+    const engineered = applyDietaryEngineeringToRecipe(raw, scale);
+    if (useAirFryer) {
+      engineered.styleTag = "Air Fryer • 190°C";
+      if (!/air\s*fryer/i.test(engineered.title)) {
+        engineered.title = `Air Fryer ${engineered.title.replace(/^(Pan-Seared|Crispy Oven-Roasted|Baked)\s+/i, "")}`;
+      }
+      if (Array.isArray(engineered.steps) && engineered.steps.length) {
+        const cookStep = engineered.steps[Math.min(1, engineered.steps.length - 1)];
+        cookStep.phase = "Step 2 • Air Fry at 190°C";
+        cookStep.instruction = `Preheat the air fryer to 190°C. Place [ing-1] in a single layer in the basket (or silicone insert) and air fry for 12 minutes, shaking or flipping halfway, until golden and cooked through.`;
+        cookStep.tip = "190°C circulating air gives a crisp sear without extra oil.";
+        cookStep.timerMinutes = 12;
+      }
+    }
+    return engineered;
+  });
 }
 
 function buildLiveOptionsPrompt(userCraving) {
